@@ -1,5 +1,5 @@
 local MOD_NAME = "Tear Indicator"
-local VERSION = "1.1.1"
+local VERSION = "1.2.0"
 
 local Indicator = RegisterMod(MOD_NAME, 1)
 local game = Game()
@@ -15,20 +15,20 @@ local ColorPresets = {
     {
         Name = "Default",
         PlayerTear = { 0.00, 0.60, 0.95 },
-        FriendlyProjectile = { 0.05, 0.25, 0.6 },
+        FriendlyProjectile = { 0.00, 0.60, 0.95 },
         EnemyProjectile = { 0.90, 0.15, 0.25 },
     },
     {
         Name = "Colorblind",
-        PlayerTear = { 0.25, 0.45, 1.00 },
-        FriendlyProjectile = { 0.25, 0.45, 1.00 },
-        EnemyProjectile = { 1.00, 0.45, 0.25 },
+        PlayerTear = { 0.30, 0.50, 1.00 },
+        FriendlyProjectile = { 0.30, 0.50, 1.00 },
+        EnemyProjectile = { 1.00, 1.00, 1.00 },
     },
     {
         Name = "Soft White",
-        PlayerTear = { 0.90, 0.95, 1.00 },
-        FriendlyProjectile = { 0.90, 1.00, 0.90 },
-        EnemyProjectile = { 1.00, 0.85, 0.75 },
+        PlayerTear = { 0.70, 0.85, 1.00 },
+        FriendlyProjectile = { 0.70, 0.85, 1.00 },
+        EnemyProjectile = { 1.00, 0.65, 0.65 },
     },
 }
 
@@ -51,9 +51,10 @@ local DefaultConfig = {
         UseCustom = false,
 
         Custom = {
+        Name = "Default",
             PlayerTear = { 0.00, 0.60, 0.95 },
-            FriendlyProjectile = { 0.05, 0.25, 0.6 },
-            EnemyProjectile = { 0.90, 0.15, 0.15 },
+            FriendlyProjectile = { 0.00, 0.60, 0.95 },
+            EnemyProjectile = { 0.90, 0.15, 0.25 },
         },
     },
 
@@ -70,15 +71,13 @@ local DefaultConfig = {
     },
 
     Marker = {
-        Enabled = true,
-
-        -- If true, the marker only appears for tears/projectiles that qualify
-        -- for the height threshold.
-        OnlyIfWillExceedHeightThreshold = true,
+        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
+        -- The high/low arch modes use the height threshold to decide.
+        Visibility = "Only for high arches",
 
         AlphaBottom = 0.85,
-        AlphaTop = 0.50,
-        ScaleBottom = 0.45,
+        AlphaTop = 0.40,
+        ScaleBottom = 0.55,
         ScaleTop = 0.20,
 
         -- Current air height at which alpha/scale reach their bottom values.
@@ -89,14 +88,12 @@ local DefaultConfig = {
     },
 
     CenterDot = {
-        Enabled = true,
+        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
+        -- The high/low arch modes use the height threshold to decide.
+        Visibility = "Only for low arches",
 
-        -- If true, the center dot only appears for tears/projectiles that
-        -- qualify for the height threshold.
-        OnlyIfWillExceedHeightThreshold = false,
-
-        AlphaBottom = 0.65,
-        AlphaTop = 0.45,
+        AlphaBottom = 0.70,
+        AlphaTop = 0.30,
         ScaleBottom = 0.60,
         ScaleTop = 0.45,
 
@@ -108,14 +105,12 @@ local DefaultConfig = {
     },
 
     Tether = {
-        Enabled = true,
-
-        -- If true, the tether only appears for tears/projectiles that qualify
-        -- for the height threshold.
-        OnlyIfWillExceedHeightThreshold = true,
+        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
+        -- The high/low arch modes use the height threshold to decide.
+        Visibility = "Only for high arches",
 
         -- Removes short tethers.
-        MinLength = 15,
+        MinLength = 0,
 
         -- Removes tethers which are too long.
         -- 0 means unlimited.
@@ -150,11 +145,9 @@ local DefaultConfig = {
     },
 
     Trail = {
-        Enabled = true,
-
-        -- If true, the trail only appears for tears/projectiles that qualify
-        -- for the height threshold.
-        OnlyIfWillExceedHeightThreshold = false,
+        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
+        -- The high/low arch modes use the height threshold to decide.
+        Visibility = "Always",
 
         Length = 5,
         SampleEveryNFrames = 1,
@@ -164,10 +157,10 @@ local DefaultConfig = {
         -- marker center along the trail direction.
         OffsetFromMarkerCenter = 0,
 
-        AlphaBottom = 0.80,
-        AlphaTop = 0.40,
-        ScaleBottom = 0.20,
-        ScaleTop = 0.10,
+        AlphaBottom = 1.00,
+        AlphaTop = 1.00,
+        ScaleBottom = 0.15,
+        ScaleTop = 0.15,
 
         -- Current air height at which alpha/scale reach their bottom values.
         HeightForBottomValues = 25,
@@ -178,11 +171,9 @@ local DefaultConfig = {
     },
 
     HeightText = {
-        Enabled = false,
-
-        -- If true, height text only appears for tears/projectiles that qualify
-        -- for the height threshold.
-        OnlyIfWillExceedHeightThreshold = false,
+        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
+        -- The high/low arch modes use the height threshold to decide.
+        Visibility = "Disabled",
 
         MinHeight = 0,
 
@@ -339,6 +330,24 @@ end
 
 local function getYesNoText(value)
     return value and "Yes" or "No"
+end
+
+-- The ordered list of indicator visibility modes shown in the Mod Config Menu.
+local VisibilityOptions = {
+    "Always",
+    "Only for high arches",
+    "Only for low arches",
+    "Disabled",
+}
+
+local function visibilityIndex(value)
+    for i = 1, #VisibilityOptions do
+        if VisibilityOptions[i] == value then
+            return i
+        end
+    end
+
+    return 1
 end
 
 -- ============================================================================
@@ -756,7 +765,7 @@ local function getOrCreateEntityState(entity, kind)
 end
 
 local function recordTrailPoint(entity, state)
-    if not Config.Trail.Enabled then
+    if Config.Trail.Visibility == "Disabled" then
         return
     end
 
@@ -894,56 +903,44 @@ end
 -- Indicator rendering
 -- ============================================================================
 
-local function shouldRenderIndicatorPart(enabled, onlyIfWillExceedHeightThreshold, state)
-    if not enabled then
+local function shouldRenderIndicatorPart(visibility, state)
+    if visibility == "Disabled" then
         return false
     end
 
-    if state ~= nil and state.IndicatorActive then
-        return true
+    -- A height-qualified, slot-active entity counts as a "high arch".
+    local isHighArch = state ~= nil and state.IndicatorActive
+
+    if visibility == "Only for high arches" then
+        return isHighArch
     end
 
-    return not onlyIfWillExceedHeightThreshold
+    if visibility == "Only for low arches" then
+        return not isHighArch
+    end
+
+    -- "Always" (and any unexpected value) renders unconditionally.
+    return true
 end
 
 local function shouldRenderMarker(state)
-    return shouldRenderIndicatorPart(
-        Config.Marker.Enabled,
-        Config.Marker.OnlyIfWillExceedHeightThreshold,
-        state
-    )
+    return shouldRenderIndicatorPart(Config.Marker.Visibility, state)
 end
 
 local function shouldRenderCenterDot(state)
-    return shouldRenderIndicatorPart(
-        Config.CenterDot.Enabled,
-        Config.CenterDot.OnlyIfWillExceedHeightThreshold,
-        state
-    )
+    return shouldRenderIndicatorPart(Config.CenterDot.Visibility, state)
 end
 
 local function shouldRenderTrail(state)
-    return shouldRenderIndicatorPart(
-        Config.Trail.Enabled,
-        Config.Trail.OnlyIfWillExceedHeightThreshold,
-        state
-    )
+    return shouldRenderIndicatorPart(Config.Trail.Visibility, state)
 end
 
 local function shouldRenderTether(state)
-    return shouldRenderIndicatorPart(
-        Config.Tether.Enabled,
-        Config.Tether.OnlyIfWillExceedHeightThreshold,
-        state
-    )
+    return shouldRenderIndicatorPart(Config.Tether.Visibility, state)
 end
 
 local function shouldRenderHeightText(state)
-    return shouldRenderIndicatorPart(
-        Config.HeightText.Enabled,
-        Config.HeightText.OnlyIfWillExceedHeightThreshold,
-        state
-    )
+    return shouldRenderIndicatorPart(Config.HeightText.Visibility, state)
 end
 
 local function getHeightLerpValue(currentHeight, HeightForBottomValues, HeightForTopValues)
@@ -1338,6 +1335,32 @@ local function addYesNoSetting(menu, tab, label, path, info, afterChange)
     })
 end
 
+local function addVisibilitySetting(menu, tab, label, path, info, afterChange)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = 1,
+        Maximum = #VisibilityOptions,
+        ModifyBy = 1,
+
+        CurrentSetting = function()
+            return visibilityIndex(getNestedValue(Config, path))
+        end,
+
+        Display = function()
+            local index = visibilityIndex(getNestedValue(Config, path))
+            return label .. ": " .. VisibilityOptions[index]
+        end,
+
+        OnChange = function(value)
+            local index = clamp(math.floor((value or 1) + 0.5), 1, #VisibilityOptions)
+            setNestedValue(Config, path, VisibilityOptions[index])
+            onConfigChanged(afterChange)
+        end,
+
+        Info = info,
+    })
+end
+
 local function addNumberSetting(menu, tab, label, path, minValue, maxValue, step, decimals, info, afterChange)
     menu.AddSetting(MOD_NAME, tab, {
         Type = menu.OptionType.NUMBER,
@@ -1463,7 +1486,7 @@ local function setupModConfigMenu()
     mcmAddSpace(menu, "General")
     mcmAddSpace(menu, "General")
 
-    addBooleanSetting(menu, "General", "Show projectile heights", { "HeightText", "Enabled" }, {
+    addVisibilitySetting(menu, "General", "Projectile heights", { "HeightText", "Visibility" }, {
         "Shows the height of projectiles next to them.",
         "You can use this to conifgure the mod more easily."
     })
@@ -1578,12 +1601,9 @@ local function setupModConfigMenu()
     -- Markers
     mcmAddTitle(menu, "Markers", "Circle")
 
-    addYesNoSetting(menu, "Markers", "Enabled", { "Marker", "Enabled" }, {
-        "Draws the ground ring.",
-    })
-
-    addYesNoSetting(menu, "Markers", "Only for high arcs", { "Marker", "OnlyIfWillExceedHeightThreshold" }, {
-        "If enabled, the marker only appears for tears/projectiles that exceed the height threshold.",
+    addVisibilitySetting(menu, "Markers", "Visibility", { "Marker", "Visibility" }, {
+        "Controls when the ground ring is drawn.",
+        "High/low arches use the height threshold to decide.",
     })
 
     addNumberSetting(menu, "Markers", "Alpha bottom", { "Marker", "AlphaBottom" }, 0, 1, 0.05, 2, {
@@ -1614,12 +1634,9 @@ local function setupModConfigMenu()
 
     mcmAddTitle(menu, "Markers", "Center dot")
 
-    addYesNoSetting(menu, "Markers", "Enabled", { "CenterDot", "Enabled" }, {
-        "Draws the ground center dot.",
-    })
-
-    addYesNoSetting(menu, "Markers", "Only for high arcs", { "CenterDot", "OnlyIfWillExceedHeightThreshold" }, {
-        "If enabled, the center dot only appears for tears/projectiles that exceed the height threshold.",
+    addVisibilitySetting(menu, "Markers", "Visibility", { "CenterDot", "Visibility" }, {
+        "Controls when the ground center dot is drawn.",
+        "High/low arches use the height threshold to decide.",
     })
 
     addNumberSetting(menu, "Markers", "Alpha bottom", { "CenterDot", "AlphaBottom" }, 0, 1, 0.05, 2, {
@@ -1649,12 +1666,9 @@ local function setupModConfigMenu()
     -- Tether
     mcmAddTitle(menu, "Tether", "Tether")
 
-    addYesNoSetting(menu, "Tether", "Enabled", { "Tether", "Enabled" }, {
-        "Draws the vertical guide from the tear/projectile to the ground.",
-    })
-
-    addYesNoSetting(menu, "Tether", "Only for high arcs", { "Tether", "OnlyIfWillExceedHeightThreshold" }, {
-        "If enabled, the tether only appears for tears/projectiles that exceed the height threshold.",
+    addVisibilitySetting(menu, "Tether", "Visibility", { "Tether", "Visibility" }, {
+        "Controls when the vertical guide from the tear/projectile to the ground is drawn.",
+        "High/low arches use the height threshold to decide.",
     })
 
     addNumberSetting(menu, "Tether", "Point spacing", { "Tether", "Step" }, 0.25, 40.00, 0.25, 2, {
@@ -1701,13 +1715,10 @@ local function setupModConfigMenu()
     -- Trail
     mcmAddTitle(menu, "Trail", "Trail")
 
-    addYesNoSetting(menu, "Trail", "Enabled", { "Trail", "Enabled" }, {
-        "Draws a short trail behind tears/projectiles.",
+    addVisibilitySetting(menu, "Trail", "Visibility", { "Trail", "Visibility" }, {
+        "Controls when the short trail behind tears/projectiles is drawn.",
+        "High/low arches use the height threshold to decide.",
     }, resetRuntimeData)
-
-    addYesNoSetting(menu, "Trail", "Only for high arcs", { "Trail", "OnlyIfWillExceedHeightThreshold" }, {
-        "If enabled, the trail only appears for tears/projectiles that exceed the height threshold.",
-    })
 
     addNumberSetting(menu, "Trail", "Length", { "Trail", "Length" }, 0, 20, 1, 0, {
         "Number of trail points at once.",
@@ -1756,12 +1767,9 @@ local function setupModConfigMenu()
 
     mcmAddTitle(menu, "Debug", "Projectile height")
 
-    addYesNoSetting(menu, "Debug", "Show", { "HeightText", "Enabled" }, {
-        "Shows the height next to projectiles as a number.",
-    })
-
-    addYesNoSetting(menu, "Debug", "Height only for high arcs", { "HeightText", "OnlyIfWillExceedHeightThreshold" }, {
-        "If enabled, height text only appears for tears/projectiles that exceed the height threshold.",
+    addVisibilitySetting(menu, "Debug", "Visibility", { "HeightText", "Visibility" }, {
+        "Controls when the height number next to projectiles is shown.",
+        "High/low arches use the height threshold to decide.",
     })
 
     addNumberSetting(menu, "Debug", "Minimum height", { "HeightText", "MinHeight" }, 0, 96, 1, 0, {
