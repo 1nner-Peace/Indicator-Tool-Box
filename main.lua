@@ -1,5 +1,5 @@
 local MOD_NAME = "Tear Indicator"
-local VERSION = "1.2.0"
+local VERSION = "2.0.0"
 
 local Indicator = RegisterMod(MOD_NAME, 1)
 local game = Game()
@@ -38,12 +38,6 @@ local DefaultConfig = {
         DebugText = false,
     },
 
-    Targets = {
-        PlayerTears = true,
-        FriendlyProjectiles = false,
-        EnemyProjectiles = true,
-    },
-
     Colors = {
         Preset = 1,
 
@@ -58,135 +52,6 @@ local DefaultConfig = {
         },
     },
 
-    Filters = {
-        -- 0 means no height filtering.
-        HeightThreshold = 45,
-
-        -- If true, raw Height is allowed to act as a "future peak" hint.
-        -- This is what lets many high-arc tears be marked from their start.
-        UseRawHeightAsPeakHint = true,
-
-        -- 0 means unlimited.
-        MaxActiveIndicators = 80,
-    },
-
-    Marker = {
-        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
-        -- The high/low arch modes use the height threshold to decide.
-        Visibility = "Only for high arches",
-
-        AlphaBottom = 0.85,
-        AlphaTop = 0.40,
-        ScaleBottom = 0.55,
-        ScaleTop = 0.20,
-
-        -- Current air height at which alpha/scale reach their bottom values.
-        HeightForBottomValues = 25,
-
-        -- Current air height at which alpha/scale reach their top values.
-        HeightForTopValues = 200,
-    },
-
-    CenterDot = {
-        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
-        -- The high/low arch modes use the height threshold to decide.
-        Visibility = "Only for low arches",
-
-        AlphaBottom = 0.70,
-        AlphaTop = 0.30,
-        ScaleBottom = 0.60,
-        ScaleTop = 0.45,
-
-        -- Current air height at which alpha/scale reach their bottom values.
-        HeightForBottomValues = 25,
-
-        -- Current air height at which alpha/scale reach their top values.
-        HeightForTopValues = 200,
-    },
-
-    Tether = {
-        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
-        -- The high/low arch modes use the height threshold to decide.
-        Visibility = "Only for high arches",
-
-        -- Removes short tethers.
-        MinLength = 0,
-
-        -- Removes tethers which are too long.
-        -- 0 means unlimited.
-        MaxLength = 200,
-
-        -- Offsets the top end of the tether relative to the projectiles.
-        -- Positive values move the ends down.
-        TopYOffset = 6,
-
-        -- Offsets the bottom end relative to the ground.
-        BottomYOffset = 0,
-
-        -- Sprite spacing
-        Step = 5.75,
-
-        -- Vertical sprite scale
-        Height = 0.40,
-
-        AlphaBottom = 1.00,
-        AlphaTop = 0.00,
-        WidthBottom = 0.30,
-        WidthTop = 0.30,
-
-        -- Current air height at which alpha/scale reach their minimum values.
-        HeightForBottomValues = 40,
-
-        -- Current air height at which alpha/scale reach their maximum values.
-        HeightForTopValues = 200,
-
-        -- Uses the projectile's visual offset for tether placement.
-        UsePositionOffset = true,
-    },
-
-    Trail = {
-        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
-        -- The high/low arch modes use the height threshold to decide.
-        Visibility = "Always",
-
-        Length = 5,
-        SampleEveryNFrames = 1,
-        MinDistance = 10.00,
-
-        -- Positive values push trail samples farther away from the current
-        -- marker center along the trail direction.
-        OffsetFromMarkerCenter = 0,
-
-        AlphaBottom = 1.00,
-        AlphaTop = 1.00,
-        ScaleBottom = 0.15,
-        ScaleTop = 0.15,
-
-        -- Current air height at which alpha/scale reach their bottom values.
-        HeightForBottomValues = 25,
-
-        -- Current air height at which alpha/scale reach their top values.
-        HeightForTopValues = 200,
-
-    },
-
-    HeightText = {
-        -- "Always", "Only for high arches", "Only for low arches", or "Disabled".
-        -- The high/low arch modes use the height threshold to decide.
-        Visibility = "Disabled",
-
-        MinHeight = 0,
-
-        OffsetX = 8,
-        OffsetY = -6,
-
-        Scale = 0.70,
-        Alpha = 0.90,
-        Decimals = 0,
-
-        UsePositionOffset = true,
-    },
-
     Sprites = {
         Enabled = true,
         FallbackToText = true,
@@ -198,7 +63,100 @@ local DefaultConfig = {
     Cleanup = {
         StaleFrames = 20,
     },
+
+    -- Runtime-created indicator instances. Each entry is one Indikator tab: a
+    -- Type plus its own settings for every type, so switching Type never loses
+    -- another type's values. Seeded with one instance on first launch (see
+    -- loadConfig). The renderer iterates this list.
+    Indikators = {},
 }
+
+-- The Mode selector choices for an Indikator, in display/order.
+local IndikatorTypes = { "Marker", "Tether", "Trail", "Number" }
+
+-- Fresh per-type defaults for one Indikator. Values mirror the old global
+-- Marker/Tether/Trail/HeightText defaults plus the shared category/filter
+-- fields each type now carries.
+local function makeIndikatorData()
+    return {
+        Type = 1, -- index into IndikatorTypes
+
+        Marker = {
+            Visibility = "Only for high arches",
+            HeightThreshold = 45,
+            Symbol = 1,
+            AlphaBottom = 0.85,
+            AlphaTop = 0.40,
+            ScaleBottom = 0.55,
+            ScaleTop = 0.20,
+            HeightForBottomValues = 25,
+            HeightForTopValues = 200,
+            PlayerTears = true,
+            FriendlyTears = false,
+            EnemyProjectiles = true,
+            MaxActiveIndicators = 80,
+            MarkFromStartToEnd = true,
+        },
+
+        Tether = {
+            Visibility = "Only for high arches",
+            HeightThreshold = 45,
+            Symbol = 1,
+            Step = 5.75,
+            Height = 0.40,
+            MinLength = 0,
+            MaxLength = 200,
+            AlphaBottom = 1.00,
+            AlphaTop = 0.00,
+            WidthBottom = 0.30,
+            WidthTop = 0.30,
+            HeightForBottomValues = 40,
+            HeightForTopValues = 200,
+            PlayerTears = true,
+            FriendlyTears = false,
+            EnemyProjectiles = true,
+            MaxActiveIndicators = 80,
+            MarkFromStartToEnd = true,
+        },
+
+        Trail = {
+            Visibility = "Always",
+            HeightThreshold = 45,
+            Symbol = 1,
+            PointCount = 5,
+            MinDistance = 10.00,
+            OffsetFromMarkerCenter = 0,
+            AlphaBottom = 1.00,
+            AlphaTop = 1.00,
+            ScaleBottom = 0.15,
+            ScaleTop = 0.15,
+            HeightForBottomValues = 25,
+            HeightForTopValues = 200,
+            PlayerTears = true,
+            FriendlyTears = false,
+            EnemyProjectiles = true,
+            MaxActiveIndicators = 80,
+            MarkFromStartToEnd = true,
+        },
+
+        Number = {
+            Visibility = "Disabled",
+            HeightThreshold = 45,
+            MinHeight = 0,
+            Decimals = 0,
+            Scale = 0.70,
+            Alpha = 0.90,
+            OffsetX = 8,
+            OffsetY = -6,
+            UsePositionOffset = true,
+            PlayerTears = true,
+            FriendlyTears = false,
+            EnemyProjectiles = true,
+            MaxActiveIndicators = 80,
+            MarkFromStartToEnd = true,
+        },
+    }
+end
 
 ---@type table
 local Config = nil
@@ -369,6 +327,8 @@ local function loadConfig()
     Config = deepCopy(DefaultConfig)
 
     if not Indicator:HasData() then
+        -- Fresh install: start with a single Indikator to configure.
+        Config.Indikators = { makeIndikatorData() }
         return
     end
 
@@ -383,21 +343,15 @@ local function loadConfig()
     local savedConfig = decoded.Config or decoded
     Config = mergeConfig(deepCopy(DefaultConfig), savedConfig)
 
-    -- Backwards compatibility for 0.4.x CenterDot settings.
-    if type(savedConfig) == "table" and type(savedConfig.CenterDot) == "table" then
-        if type(savedConfig.CenterDot.Alpha) == "number" then
-            Config.CenterDot.AlphaTop = savedConfig.CenterDot.Alpha
-        end
-
-        if type(savedConfig.CenterDot.Scale) == "number" then
-            Config.CenterDot.ScaleTop = savedConfig.CenterDot.Scale
-        end
-    end
-
-    -- Preserve old tether appearance if Width did not exist yet.
-    if type(savedConfig) == "table" and type(savedConfig.Tether) == "table" then
-        if type(savedConfig.Tether.Scale) == "number" and type(savedConfig.Tether.Width) ~= "number" then
-            Config.Tether.Width = savedConfig.Tether.Scale
+    -- mergeConfig only keeps keys present in the defaults, so the dynamic
+    -- Indikators array is dropped. Restore it here, normalizing each instance
+    -- against a fresh template so missing fields are filled in.
+    Config.Indikators = {}
+    if type(savedConfig) == "table" and type(savedConfig.Indikators) == "table" then
+        for _, instance in ipairs(savedConfig.Indikators) do
+            if type(instance) == "table" then
+                table.insert(Config.Indikators, mergeConfig(makeIndikatorData(), instance))
+            end
         end
     end
 end
@@ -632,31 +586,44 @@ local function getVisualColor(entity, kind)
     return preset.EnemyProjectile
 end
 
-local function passesBaseFilters(entity, kind)
+local function passesBaseEntityChecks(entity)
     if entity == nil or not entity:Exists() then
         return false
     end
 
-    if not entity.Visible then
-        return false
-    end
+    return entity.Visible
+end
 
+-- The Indikator category an entity belongs to. These strings match the per-type
+-- category toggle field names (PlayerTears / FriendlyTears / EnemyProjectiles).
+local function entityCategoryKey(entity, kind)
     if kind == "tear" then
         if isFamiliarTear(entity) then
-            return Config.Targets.FriendlyProjectiles
+            return "FriendlyTears"
         end
 
-        return Config.Targets.PlayerTears
+        return "PlayerTears"
     end
 
-    if kind == "projectile" then
-        local friendly = isFriendlyProjectile(entity)
+    if isFriendlyProjectile(entity) then
+        return "FriendlyTears"
+    end
 
-        if friendly then
-            return Config.Targets.FriendlyProjectiles
+    return "EnemyProjectiles"
+end
+
+-- The per-type settings subtable an Indikator instance is currently using.
+local function indikatorStore(inst)
+    return inst[IndikatorTypes[inst.Type]]
+end
+
+-- True if at least one Indikator targets this category, i.e. the entity is
+-- worth tracking at all.
+local function entityWantedByAnyIndikator(catKey)
+    for _, inst in ipairs(Config.Indikators) do
+        if indikatorStore(inst)[catKey] then
+            return true
         end
-
-        return Config.Targets.EnemyProjectiles
     end
 
     return false
@@ -702,16 +669,6 @@ local function getCurrentAirHeight(entity)
     return math.abs(getRawHeight(entity))
 end
 
-local function getHeightQualificationCandidate(entity)
-    local currentHeight = getCurrentAirHeight(entity)
-
-    if Config.Filters.UseRawHeightAsPeakHint then
-        return math.max(currentHeight, math.abs(getRawHeight(entity)))
-    end
-
-    return currentHeight
-end
-
 -- ============================================================================
 -- Runtime tracking
 -- ============================================================================
@@ -722,7 +679,7 @@ resetRuntimeData = function()
     entityStates = {}
 end
 
-local function getOrCreateEntityState(entity, kind)
+local function getOrCreateEntityState(entity, kind, catKey)
     local key = getEntityKey(entity)
     local frame = game:GetFrameCount()
 
@@ -732,65 +689,74 @@ local function getOrCreateEntityState(entity, kind)
         state = {
             Key = key,
             Kind = kind,
+            CategoryKey = catKey,
 
             SpawnFrame = frame,
             LastSeenFrame = frame,
 
-            HighestCandidateHeight = 0,
-            HeightQualified = false,
+            Position = Vector(entity.Position.X, entity.Position.Y),
 
-            IndicatorActive = false,
-            IndicatorSlotFrame = nil,
+            -- Highest lifetime values; qualification is derived per Indikator
+            -- from these plus that Indikator's threshold/peak-hint setting.
+            MaxCurrentHeight = 0,
+            MaxRawHeight = 0,
 
-            Points = {},
-            LastSampleFrame = -999999,
+            -- Per-Indikator runtime, keyed by the instance table:
+            --   Indi[inst]   = { Qualified, Active, SlotFrame }
+            --   Trails[inst] = { Points, LastSampleFrame }
+            Indi = {},
+            Trails = {},
         }
 
         entityStates[key] = state
     end
 
     state.Kind = kind
+    state.CategoryKey = catKey
     state.LastSeenFrame = frame
+    state.Position = Vector(entity.Position.X, entity.Position.Y)
 
-    local candidateHeight = getHeightQualificationCandidate(entity)
-    if candidateHeight > state.HighestCandidateHeight then
-        state.HighestCandidateHeight = candidateHeight
+    local cur = getCurrentAirHeight(entity)
+    local raw = math.abs(getRawHeight(entity))
+
+    if cur > state.MaxCurrentHeight then
+        state.MaxCurrentHeight = cur
     end
 
-    local threshold = Config.Filters.HeightThreshold or 0
-    state.HeightQualified =
-        threshold <= 0 or state.HighestCandidateHeight >= threshold
+    if raw > state.MaxRawHeight then
+        state.MaxRawHeight = raw
+    end
 
     return state
 end
 
-local function recordTrailPoint(entity, state)
-    if Config.Trail.Visibility == "Disabled" then
-        return
+-- Fallback point count if an instance somehow lacks the field.
+local TRAIL_POINT_LIMIT = 5
+
+-- Samples a position into a Trail-type Indikator's own buffer for one entity.
+-- Each Trail Indikator keeps its own buffer (keyed by the instance) so they can
+-- use different MinDistance spacing and point counts.
+local function sampleTrail(state, inst, store)
+    local buf = state.Trails[inst]
+
+    if buf == nil then
+        buf = { Points = {}, LastSampleFrame = -999999 }
+        state.Trails[inst] = buf
     end
 
-    local trailLength = math.floor(Config.Trail.Length or 0)
-    if trailLength <= 0 then
-        return
-    end
-
-    local frame = game:GetFrameCount()
-
-    if frame - state.LastSampleFrame < (Config.Trail.SampleEveryNFrames or 1) then
-        return
-    end
-
-    local points = state.Points
+    local points = buf.Points
+    local pos = state.Position
     local shouldSample = false
 
     if #points == 0 then
         shouldSample = true
     else
         local last = points[#points]
-        local delta = entity.Position - last
-        local minDistance = Config.Trail.MinDistance or 0
+        local dx = pos.X - last.X
+        local dy = pos.Y - last.Y
+        local minDistance = store.MinDistance or 0
 
-        if delta:LengthSquared() >= minDistance * minDistance then
+        if (dx * dx + dy * dy) >= minDistance * minDistance then
             shouldSample = true
         end
     end
@@ -799,10 +765,15 @@ local function recordTrailPoint(entity, state)
         return
     end
 
-    table.insert(points, Vector(entity.Position.X, entity.Position.Y))
-    state.LastSampleFrame = frame
+    table.insert(points, Vector(pos.X, pos.Y))
+    buf.LastSampleFrame = game:GetFrameCount()
 
-    while #points > trailLength do
+    local limit = math.floor(store.PointCount or TRAIL_POINT_LIMIT)
+    if limit < 1 then
+        limit = 1
+    end
+
+    while #points > limit do
         table.remove(points, 1)
     end
 end
@@ -818,21 +789,45 @@ local function pruneEntityStates()
     end
 end
 
-local function updateIndicatorSlots()
-    local maxActive = math.floor(Config.Filters.MaxActiveIndicators or 0)
-    local frame = game:GetFrameCount()
+-- Whether an entity should draw for an Indikator given its visibility mode and
+-- whether it is height-qualified (a "high arch"). This is the full visibility
+-- decision; the Max-active cap is then applied on top of it.
+local function visibilityWantsRender(visibility, qualified)
+    if visibility == "Disabled" then
+        return false
+    end
 
+    if visibility == "Only for high arches" then
+        return qualified
+    end
+
+    if visibility == "Only for low arches" then
+        return not qualified
+    end
+
+    -- "Always" (and any unexpected value) renders regardless of height.
+    return true
+end
+
+-- Stable slot allocation for one Indikator: keep already-active entities that
+-- still want to render, then fill any spare slots with the oldest such
+-- entities. Operates on each entity's per-instance slot (state.Indi[inst]),
+-- whose WantsRender flag must already be set for this frame. This is what makes
+-- the Max-active cap bound the rendered count in every visibility mode.
+local function allocateIndikatorSlots(inst, maxActive, frame)
     if maxActive <= 0 then
         for _, state in pairs(entityStates) do
-            if state.HeightQualified then
-                if not state.IndicatorActive then
-                    state.IndicatorSlotFrame = frame
+            local slot = state.Indi[inst]
+            if slot ~= nil then
+                if slot.WantsRender then
+                    if not slot.Active then
+                        slot.SlotFrame = frame
+                    end
+                    slot.Active = true
+                else
+                    slot.Active = false
+                    slot.SlotFrame = nil
                 end
-
-                state.IndicatorActive = true
-            else
-                state.IndicatorActive = false
-                state.IndicatorSlotFrame = nil
             end
         end
 
@@ -842,17 +837,20 @@ local function updateIndicatorSlots()
     local active = {}
 
     for _, state in pairs(entityStates) do
-        if state.IndicatorActive and state.HeightQualified then
-            table.insert(active, state)
-        else
-            state.IndicatorActive = false
-            state.IndicatorSlotFrame = nil
+        local slot = state.Indi[inst]
+        if slot ~= nil then
+            if slot.Active and slot.WantsRender then
+                table.insert(active, state)
+            else
+                slot.Active = false
+                slot.SlotFrame = nil
+            end
         end
     end
 
     table.sort(active, function(a, b)
-        local aSlot = a.IndicatorSlotFrame or a.SpawnFrame
-        local bSlot = b.IndicatorSlotFrame or b.SpawnFrame
+        local aSlot = a.Indi[inst].SlotFrame or a.SpawnFrame
+        local bSlot = b.Indi[inst].SlotFrame or b.SpawnFrame
 
         if aSlot == bSlot then
             return a.Key < b.Key
@@ -862,8 +860,8 @@ local function updateIndicatorSlots()
     end)
 
     for i = maxActive + 1, #active do
-        active[i].IndicatorActive = false
-        active[i].IndicatorSlotFrame = nil
+        active[i].Indi[inst].Active = false
+        active[i].Indi[inst].SlotFrame = nil
     end
 
     local activeCount = math.min(#active, maxActive)
@@ -875,7 +873,8 @@ local function updateIndicatorSlots()
     local candidates = {}
 
     for _, state in pairs(entityStates) do
-        if state.HeightQualified and not state.IndicatorActive then
+        local slot = state.Indi[inst]
+        if slot ~= nil and slot.WantsRender and not slot.Active then
             table.insert(candidates, state)
         end
     end
@@ -893,55 +892,64 @@ local function updateIndicatorSlots()
             break
         end
 
-        state.IndicatorActive = true
-        state.IndicatorSlotFrame = frame
+        state.Indi[inst].Active = true
+        state.Indi[inst].SlotFrame = frame
         activeCount = activeCount + 1
+    end
+end
+
+-- For every Indikator: derive each tracked entity's qualification from that
+-- Indikator's own threshold/peak-hint, allocate slots, and (for Trail types)
+-- sample trail points.
+local function updateIndikatorRuntime()
+    local frame = game:GetFrameCount()
+
+    for _, inst in ipairs(Config.Indikators) do
+        local store = indikatorStore(inst)
+        local threshold = store.HeightThreshold or 0
+        local peakHint = store.MarkFromStartToEnd
+        local maxActive = math.floor(store.MaxActiveIndicators or 0)
+        local isTrail = inst.Type == 3
+        local trailEnabled = isTrail and store.Visibility ~= "Disabled"
+
+        local visibility = store.Visibility
+
+        for _, state in pairs(entityStates) do
+            if store[state.CategoryKey] then
+                local slot = state.Indi[inst]
+                if slot == nil then
+                    slot = { WantsRender = false, Active = false, SlotFrame = nil }
+                    state.Indi[inst] = slot
+                end
+
+                local highest = state.MaxCurrentHeight
+                if peakHint and state.MaxRawHeight > highest then
+                    highest = state.MaxRawHeight
+                end
+
+                local qualified = threshold <= 0 or highest >= threshold
+                slot.WantsRender = visibilityWantsRender(visibility, qualified)
+
+                if trailEnabled then
+                    sampleTrail(state, inst, store)
+                end
+            else
+                local slot = state.Indi[inst]
+                if slot ~= nil then
+                    slot.WantsRender = false
+                    slot.Active = false
+                    slot.SlotFrame = nil
+                end
+            end
+        end
+
+        allocateIndikatorSlots(inst, maxActive, frame)
     end
 end
 
 -- ============================================================================
 -- Indicator rendering
 -- ============================================================================
-
-local function shouldRenderIndicatorPart(visibility, state)
-    if visibility == "Disabled" then
-        return false
-    end
-
-    -- A height-qualified, slot-active entity counts as a "high arch".
-    local isHighArch = state ~= nil and state.IndicatorActive
-
-    if visibility == "Only for high arches" then
-        return isHighArch
-    end
-
-    if visibility == "Only for low arches" then
-        return not isHighArch
-    end
-
-    -- "Always" (and any unexpected value) renders unconditionally.
-    return true
-end
-
-local function shouldRenderMarker(state)
-    return shouldRenderIndicatorPart(Config.Marker.Visibility, state)
-end
-
-local function shouldRenderCenterDot(state)
-    return shouldRenderIndicatorPart(Config.CenterDot.Visibility, state)
-end
-
-local function shouldRenderTrail(state)
-    return shouldRenderIndicatorPart(Config.Trail.Visibility, state)
-end
-
-local function shouldRenderTether(state)
-    return shouldRenderIndicatorPart(Config.Tether.Visibility, state)
-end
-
-local function shouldRenderHeightText(state)
-    return shouldRenderIndicatorPart(Config.HeightText.Visibility, state)
-end
 
 local function getHeightLerpValue(currentHeight, HeightForBottomValues, HeightForTopValues)
     HeightForBottomValues = HeightForBottomValues or 0
@@ -955,8 +963,8 @@ local function getHeightLerpValue(currentHeight, HeightForBottomValues, HeightFo
     return clamp(((currentHeight or 0) - HeightForBottomValues) / span, 0, 1)
 end
 
-local function getTrailPointWithCenterOffset(point, centerPos)
-    local offset = Config.Trail.OffsetFromMarkerCenter or 0
+local function getTrailPointWithCenterOffset(point, centerPos, offset)
+    offset = offset or 0
 
     if math.abs(offset) < 0.01 then
         return point
@@ -978,38 +986,38 @@ local function getTrailPointWithCenterOffset(point, centerPos)
     )
 end
 
-local function renderTrail(entity, state, rgb, alpha, scale)
-    if state == nil then
+local function renderTrailIndikator(entity, store, buf, rgb, currentHeight)
+    if buf == nil then
         return
     end
 
-    local points = state.Points
+    local points = buf.Points
     local count = #points
 
     if count <= 1 then
         return
     end
 
+    local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
+    local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
+    local scale = lerp(store.ScaleBottom, store.ScaleTop, t)
+    local offset = store.OffsetFromMarkerCenter or 0
+
     local drawableCount = count - 1
     local centerPos = entity.Position
 
     for i = 1, drawableCount do
-        local p = getTrailPointWithCenterOffset(points[i], centerPos)
+        local p = getTrailPointWithCenterOffset(points[i], centerPos, offset)
         local f = i / drawableCount
-
-        local alphaFaded = alpha * f
-        local spriteScaleFaded = scale * f
-
-        local textScale = 0.90 * f
 
         drawIndicatorSprite(
             "Trail",
             worldToScreen(p),
-            spriteScaleFaded,
+            scale * f,
             nil,
             rgb,
-            alphaFaded,
-            textScale
+            alpha * f,
+            0.90 * f
         )
     end
 end
@@ -1044,26 +1052,32 @@ local function getProjectileVisualScreenPos(entity, groundScreenPos, usePosition
     return Vector(groundScreenPos.X, visualY), airHeight
 end
 
-local function renderTether(entity, state, rgb, groundScreenPos, alpha, width)
-    if state == nil then
-        return
-    end
+-- The tether's end offsets and position-offset usage are no longer exposed in
+-- the new Tether type, so they use the previous defaults.
+local TETHER_TOP_Y_OFFSET = 6
+local TETHER_BOTTOM_Y_OFFSET = 0
+local TETHER_USE_POSITION_OFFSET = true
+
+local function renderTetherIndikator(entity, store, rgb, groundScreenPos, currentHeight)
+    local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
+    local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
+    local width = lerp(store.WidthBottom, store.WidthTop, t)
 
     local visualScreenPos = getProjectileVisualScreenPos(
         entity,
         groundScreenPos,
-        Config.Tether.UsePositionOffset
+        TETHER_USE_POSITION_OFFSET
     )
 
-    local topY = visualScreenPos.Y + (Config.Tether.TopYOffset or 0)
-    local bottomY = groundScreenPos.Y + (Config.Tether.BottomYOffset or 0)
+    local topY = visualScreenPos.Y + TETHER_TOP_Y_OFFSET
+    local bottomY = groundScreenPos.Y + TETHER_BOTTOM_Y_OFFSET
     local length = bottomY - topY
 
-    if length < (Config.Tether.MinLength or 0) then
+    if length < (store.MinLength or 0) then
         return
     end
 
-    local maxLength = Config.Tether.MaxLength or 0
+    local maxLength = store.MaxLength or 0
     if maxLength > 0 and length > maxLength then
         topY = bottomY - maxLength
     end
@@ -1071,19 +1085,18 @@ local function renderTether(entity, state, rgb, groundScreenPos, alpha, width)
     local x = groundScreenPos.X
     local y = topY
 
-    local step = Config.Tether.Step or 4
+    local step = store.Step or 4
     if step <= 0 then
         step = 4
     end
 
-    local tetherScaleX = width
-    local tetherScaleY = Config.Tether.Height
+    local tetherScaleY = store.Height
 
     while y <= bottomY do
         drawIndicatorSprite(
             "Tether",
             Vector(x, y),
-            tetherScaleX,
+            width,
             tetherScaleY,
             rgb,
             alpha,
@@ -1094,159 +1107,64 @@ local function renderTether(entity, state, rgb, groundScreenPos, alpha, width)
     end
 end
 
-local function renderHeightText(entity, state, rgb, groundScreenPos)
-    if not shouldRenderHeightText(state) then
-        return
-    end
+local function renderMarkerIndikator(store, rgb, groundScreenPos, currentHeight)
+    local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
+    local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
+    local scale = lerp(store.ScaleBottom, store.ScaleTop, t)
 
+    drawIndicatorSprite(
+        "Marker",
+        groundScreenPos,
+        scale,
+        nil,
+        rgb,
+        alpha,
+        1.00
+    )
+end
+
+local function renderNumberIndikator(entity, store, rgb, groundScreenPos)
     local height = getCurrentAirHeight(entity)
 
-    if height < (Config.HeightText.MinHeight or 0) then
+    if height < (store.MinHeight or 0) then
         return
     end
 
     local visualScreenPos = getProjectileVisualScreenPos(
         entity,
         groundScreenPos,
-        Config.HeightText.UsePositionOffset
+        store.UsePositionOffset
     )
 
-    local decimals = math.floor((Config.HeightText.Decimals or 0) + 0.5)
-    decimals = clamp(decimals, 0, 2)
-
+    local decimals = clamp(math.floor((store.Decimals or 0) + 0.5), 0, 2)
     local text = formatNumber(height, decimals)
-    local scale = Config.HeightText.Scale or 0.7
-    local alpha = Config.HeightText.Alpha or 0.9
+    local scale = store.Scale or 0.7
+    local alpha = store.Alpha or 0.9
 
-    local x = visualScreenPos.X + (Config.HeightText.OffsetX or 0)
-    local y = visualScreenPos.Y + (Config.HeightText.OffsetY or 0)
+    local x = visualScreenPos.X + (store.OffsetX or 0)
+    local y = visualScreenPos.Y + (store.OffsetY or 0)
 
     -- Small shadow for readability.
-    renderText(
-        text,
-        x + 1,
-        y + 1,
-        scale,
-        scale,
-        0,
-        0,
-        0,
-        alpha * 0.75
-    )
-
-    renderText(
-        text,
-        x,
-        y,
-        scale,
-        scale,
-        rgb[1],
-        rgb[2],
-        rgb[3],
-        alpha
-    )
+    renderText(text, x + 1, y + 1, scale, scale, 0, 0, 0, alpha * 0.75)
+    renderText(text, x, y, scale, scale, rgb[1], rgb[2], rgb[3], alpha)
 end
 
-local function shouldRenderEntity(entity, kind, state)
-    if not passesBaseFilters(entity, kind) then
-        return false
+-- Draws one Indikator for one entity. The decision to draw (visibility mode +
+-- Max-active cap) was already made in updateIndikatorRuntime, so the caller only
+-- invokes this for an active slot. `state` may be nil only for trail buffers.
+local function renderIndikator(inst, store, entity, state, rgb, groundScreenPos, currentHeight)
+    local kind = inst.Type
+
+    if kind == 1 then
+        renderMarkerIndikator(store, rgb, groundScreenPos, currentHeight)
+    elseif kind == 2 then
+        renderTetherIndikator(entity, store, rgb, groundScreenPos, currentHeight)
+    elseif kind == 3 then
+        local buf = state ~= nil and state.Trails[inst] or nil
+        renderTrailIndikator(entity, store, buf, rgb, currentHeight)
+    else
+        renderNumberIndikator(entity, store, rgb, groundScreenPos)
     end
-
-    return
-        shouldRenderMarker(state) or
-        shouldRenderCenterDot(state) or
-        shouldRenderTrail(state) or
-        shouldRenderTether(state) or
-        shouldRenderHeightText(state)
-end
-
-local function renderEntityIndicator(entity, kind, state)
-    local rgb = getVisualColor(entity, kind)
-    local groundScreenPos = worldToScreen(entity.Position)
-    local currentHeight = getCurrentAirHeight(entity)
-
-    if shouldRenderMarker(state) then
-        local t = getHeightLerpValue(
-            currentHeight,
-            Config.Marker.HeightForBottomValues,
-            Config.Marker.HeightForTopValues
-        )
-
-        local alpha = lerp(Config.Marker.AlphaBottom, Config.Marker.AlphaTop, t)
-        local scale = lerp(Config.Marker.ScaleBottom, Config.Marker.ScaleTop, t)
-
-        drawIndicatorSprite(
-            "Marker",
-            groundScreenPos,
-            scale,
-            nil,
-            rgb,
-            alpha,
-            1.00
-        )
-    end
-
-    if shouldRenderCenterDot(state) then
-        local t = getHeightLerpValue(
-            currentHeight,
-            Config.CenterDot.HeightForBottomValues,
-            Config.CenterDot.HeightForTopValues
-        )
-
-        local alpha = lerp(Config.CenterDot.AlphaBottom, Config.CenterDot.AlphaTop, t)
-        local scale = lerp(Config.CenterDot.ScaleBottom, Config.CenterDot.ScaleTop, t)
-
-        drawIndicatorSprite(
-            "Center",
-            groundScreenPos,
-            scale,
-            nil,
-            rgb,
-            alpha,
-            0.75
-        )
-    end
-
-    if shouldRenderTrail(state) then
-        local t = getHeightLerpValue(
-            currentHeight,
-            Config.Trail.HeightForBottomValues,
-            Config.Trail.HeightForTopValues
-        )
-
-        local alpha = lerp(Config.Trail.AlphaBottom, Config.Trail.AlphaTop, t)
-        local scale = lerp(Config.Trail.ScaleBottom, Config.Trail.ScaleTop, t)
-
-        renderTrail(
-            entity,
-            state,
-            rgb,
-            alpha,
-            scale
-        )
-    end
-
-    if shouldRenderTether(state) then
-        local t = getHeightLerpValue(
-            currentHeight,
-            Config.Tether.HeightForBottomValues,
-            Config.Tether.HeightForTopValues
-        )
-
-        local alpha = lerp(Config.Tether.AlphaBottom, Config.Tether.AlphaTop, t)
-        local width = lerp(Config.Tether.WidthBottom, Config.Tether.WidthTop, t)
-
-        renderTether(
-            entity,
-            state,
-            rgb,
-            groundScreenPos,
-            alpha,
-            width
-        )
-    end
-
-    renderHeightText(entity, state, rgb, groundScreenPos)
 end
 
 -- ============================================================================
@@ -1254,6 +1172,9 @@ end
 -- ============================================================================
 
 local mcmRegistered = false
+
+-- Set by dynamic-tab actions to request a deferred full rebuild of the menu.
+local pendingMenuRebuild = false
 
 local function getModConfigMenu()
     if MCM ~= nil then
@@ -1328,32 +1249,6 @@ local function addYesNoSetting(menu, tab, label, path, info, afterChange)
 
         OnChange = function(value)
             setNestedValue(Config, path, value)
-            onConfigChanged(afterChange)
-        end,
-
-        Info = info,
-    })
-end
-
-local function addVisibilitySetting(menu, tab, label, path, info, afterChange)
-    menu.AddSetting(MOD_NAME, tab, {
-        Type = menu.OptionType.NUMBER,
-        Minimum = 1,
-        Maximum = #VisibilityOptions,
-        ModifyBy = 1,
-
-        CurrentSetting = function()
-            return visibilityIndex(getNestedValue(Config, path))
-        end,
-
-        Display = function()
-            local index = visibilityIndex(getNestedValue(Config, path))
-            return label .. ": " .. VisibilityOptions[index]
-        end,
-
-        OnChange = function(value)
-            local index = clamp(math.floor((value or 1) + 0.5), 1, #VisibilityOptions)
-            setNestedValue(Config, path, VisibilityOptions[index])
             onConfigChanged(afterChange)
         end,
 
@@ -1437,6 +1332,10 @@ local function addResetDefaultsSetting(menu)
             -- Reset in place so MCM-captured color table references (used to
             -- tint the Colors tab titles) keep pointing at the live config.
             assignInto(Config, DefaultConfig)
+
+            -- DefaultConfig has no Indikators, so reseed the starting one.
+            Config.Indikators = { makeIndikatorData() }
+
             saveConfig()
             resetRuntimeData()
 
@@ -1444,6 +1343,9 @@ local function addResetDefaultsSetting(menu)
             indicatorSprites = nil
             spriteLoadAttempted = false
             spritesAvailable = false
+
+            -- Indikator tabs changed, so rebuild the menu to match.
+            pendingMenuRebuild = true
         end,
 
         Info = {
@@ -1452,16 +1354,346 @@ local function addResetDefaultsSetting(menu)
     })
 end
 
-local function setupModConfigMenu()
-    if mcmRegistered then
-        return
+-- ----------------------------------------------------------------------------
+-- Dynamic Indikator tabs
+--
+-- Each Indikator instance is one tab. It has a Type (Marker/Tether/Trail/
+-- Number) and the options shown depend on that Type. MCM offers no way to
+-- remove a single subcategory, so adding/removing tabs and relaying options for
+-- a new Type is done by rebuilding the whole mod category from this data model.
+-- The rebuild is deferred (via pendingMenuRebuild) to the update phase so we
+-- never tear down MCM's structures while it is mid-render.
+-- ----------------------------------------------------------------------------
+
+local function createIndikator()
+    table.insert(Config.Indikators, makeIndikatorData())
+    saveConfig()
+    pendingMenuRebuild = true
+end
+
+-- Instances are identified by table identity, so removing one renumbers the
+-- rest automatically.
+local function deleteIndikator(instance)
+    for i, other in ipairs(Config.Indikators) do
+        if other == instance then
+            table.remove(Config.Indikators, i)
+            break
+        end
     end
 
-    local menu = getModConfigMenu()
-    if menu == nil or menu.AddSetting == nil or menu.OptionType == nil then
-        return
-    end
+    saveConfig()
+    pendingMenuRebuild = true
+end
 
+-- An action "button". Selecting it (confirm key, or right) opens a confirmation
+-- popup; the action only runs when the popup itself is confirmed. Using a popup
+-- instead of a boolean avoids the toggle-on-left/right behaviour that made the
+-- old buttons fire from a stray arrow press.
+local function addActionButton(menu, tabName, label, popupLines, action)
+    menu.AddSetting(MOD_NAME, tabName, {
+        Type = menu.OptionType.TEXT,
+
+        Display = function()
+            return label
+        end,
+
+        -- MCM treats each table entry as its own line (it only honours $newline
+        -- inside a string, not "\n"), so the prompt is built as a line list.
+        Popup = function()
+            return popupLines
+        end,
+
+        PopupGfx = menu.PopupGfx and menu.PopupGfx.WIDE_SMALL or nil,
+        PopupWidth = 280,
+
+        OnSelect = action,
+    })
+end
+
+-- Per-instance option helpers. `store` is the instance's per-type subtable and
+-- `field` the key within it, so every Indikator edits its own values.
+local function indikatorNumber(menu, tab, store, field, label, minValue, maxValue, step, decimals, info)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = minValue,
+        Maximum = maxValue,
+        ModifyBy = step or 1,
+
+        CurrentSetting = function()
+            return store[field]
+        end,
+
+        Display = function()
+            return label .. ": " .. tostring(roundNumber(store[field] or 0, decimals or 0))
+        end,
+
+        OnChange = function(value)
+            value = clamp(value or minValue, minValue, maxValue)
+            if decimals ~= nil and decimals > 0 then
+                value = roundNumber(value, decimals)
+            else
+                value = math.floor(value + 0.5)
+            end
+            store[field] = value
+            saveConfig()
+        end,
+
+        Info = info,
+    })
+end
+
+local function indikatorToggle(menu, tab, store, field, label, info)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.BOOLEAN,
+
+        CurrentSetting = function()
+            return store[field]
+        end,
+
+        Display = function()
+            return label .. ": " .. getYesNoText(store[field])
+        end,
+
+        OnChange = function(value)
+            store[field] = value
+            saveConfig()
+        end,
+
+        Info = info,
+    })
+end
+
+local function indikatorVisibility(menu, tab, store, field, label, info)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = 1,
+        Maximum = #VisibilityOptions,
+        ModifyBy = 1,
+
+        CurrentSetting = function()
+            return visibilityIndex(store[field])
+        end,
+
+        Display = function()
+            return label .. ": " .. VisibilityOptions[visibilityIndex(store[field])]
+        end,
+
+        OnChange = function(value)
+            local index = clamp(math.floor((value or 1) + 0.5), 1, #VisibilityOptions)
+            store[field] = VisibilityOptions[index]
+            saveConfig()
+        end,
+
+        Info = info,
+    })
+end
+
+-- Symbol picker placeholder. For now just an index; a real sprite-sheet picker
+-- comes later.
+local function indikatorSymbol(menu, tab, store)
+    indikatorNumber(menu, tab, store, "Symbol", "Symbol", 1, 8, 1, 0, {
+        "Which sprite to use (placeholder).",
+        "A proper sprite picker is coming later.",
+    })
+end
+
+-- The shared category toggles + caps that every type carries.
+local function indikatorCategories(menu, tab, store)
+    mcmAddTitle(menu, tab, "Categories")
+
+    indikatorToggle(menu, tab, store, "PlayerTears", "Player tears", {
+        "Show this indicator for player tears.",
+    })
+
+    indikatorToggle(menu, tab, store, "FriendlyTears", "Friendly tears", {
+        "Show this indicator for tears from familiars.",
+    })
+
+    indikatorToggle(menu, tab, store, "EnemyProjectiles", "Enemy projectiles", {
+        "Show this indicator for enemy projectiles.",
+    })
+
+    indikatorNumber(menu, tab, store, "MaxActiveIndicators", "Max active indicators", 0, 200, 5, 0, {
+        "Caps how many of these indicators render at once.",
+        "0 means unlimited.",
+    })
+
+    indikatorToggle(menu, tab, store, "MarkFromStartToEnd", "Mark from start to end", {
+        "Marks projectiles while still rising toward the threshold,",
+        "and keeps them marked as they fall back below it.",
+    })
+end
+
+local function buildMarkerOptions(menu, tab, store)
+    indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
+        "Controls when the ground ring is drawn.",
+    })
+    indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
+        "Only projectiles reaching this height qualify as high arches.",
+    })
+    indikatorSymbol(menu, tab, store)
+    indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "ScaleBottom", "Scale bottom", 0.05, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "ScaleTop", "Scale top", 0.05, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
+    indikatorCategories(menu, tab, store)
+end
+
+local function buildTetherOptions(menu, tab, store)
+    indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
+        "Controls when the vertical guide to the ground is drawn.",
+    })
+    indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
+        "Only projectiles reaching this height qualify as high arches.",
+    })
+    indikatorSymbol(menu, tab, store)
+    indikatorNumber(menu, tab, store, "Step", "Point spacing", 0.25, 40.00, 0.25, 2)
+    indikatorNumber(menu, tab, store, "Height", "Point height", 0.05, 1.50, 0.05, 2)
+    indikatorNumber(menu, tab, store, "MinLength", "Minimum tether length", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "MaxLength", "Maximum tether length", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "WidthBottom", "Width bottom", 0, 5, 0.05, 2)
+    indikatorNumber(menu, tab, store, "WidthTop", "Width top", 0, 5.00, 0.05, 2)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
+    indikatorCategories(menu, tab, store)
+end
+
+local function buildTrailOptions(menu, tab, store)
+    indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
+        "Controls when the short trail behind the projectile is drawn.",
+    })
+    indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
+        "Only projectiles reaching this height qualify as high arches.",
+    })
+    indikatorSymbol(menu, tab, store)
+    indikatorNumber(menu, tab, store, "PointCount", "Point count", 1, 30, 1, 0, {
+        "How many trail points are kept behind the projectile.",
+    })
+    indikatorNumber(menu, tab, store, "MinDistance", "Minimum distance", 0, 20, 0.25, 2)
+    indikatorNumber(menu, tab, store, "OffsetFromMarkerCenter", "Center offset", 0, 64, 1, 0)
+    indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "ScaleBottom", "Scale bottom", 0.05, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "ScaleTop", "Scale top", 0.05, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
+    indikatorCategories(menu, tab, store)
+end
+
+local function buildNumberOptions(menu, tab, store)
+    indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
+        "Controls when the height number is drawn next to the projectile.",
+    })
+    indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
+        "Only projectiles reaching this height qualify as high arches.",
+    })
+    indikatorNumber(menu, tab, store, "MinHeight", "Minimum height", 0, 96, 1, 0, {
+        "Height text is hidden below this current air height.",
+    })
+    indikatorNumber(menu, tab, store, "Decimals", "Decimals", 0, 2, 1, 0)
+    indikatorNumber(menu, tab, store, "Scale", "Text scale", 0.25, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "Alpha", "Text alpha", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "OffsetX", "Offset X", -64, 64, 1, 0)
+    indikatorNumber(menu, tab, store, "OffsetY", "Offset Y", -64, 64, 1, 0)
+    indikatorToggle(menu, tab, store, "UsePositionOffset", "Use PositionOffset", {
+        "Uses the projectile's visual PositionOffset when placing the text.",
+    })
+    indikatorCategories(menu, tab, store)
+end
+
+-- Maps a Type index to the function that emits its options.
+local IndikatorOptionBuilders = {
+    buildMarkerOptions,
+    buildTetherOptions,
+    buildTrailOptions,
+    buildNumberOptions,
+}
+
+-- The Mode selector. Changing it triggers a rebuild so the option list below is
+-- relaid out for the newly selected type.
+local function addIndikatorTypeSelector(menu, tab, instance)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = 1,
+        Maximum = #IndikatorTypes,
+        ModifyBy = 1,
+
+        CurrentSetting = function()
+            return instance.Type
+        end,
+
+        Display = function()
+            return "Mode: " .. IndikatorTypes[instance.Type]
+        end,
+
+        OnChange = function(value)
+            instance.Type = clamp(math.floor((value or 1) + 0.5), 1, #IndikatorTypes)
+            saveConfig()
+            -- Relayout the options below to match the new type.
+            pendingMenuRebuild = true
+        end,
+
+        Info = {
+            "Choose what this indicator draws.",
+            "The options below change to match.",
+        },
+    })
+end
+
+-- Builds one Indikator tab: a delete button, the Mode selector, then the
+-- options for the instance's current type.
+local function buildIndikatorTab(menu, tab, instance)
+    mcmAddTitle(menu, tab, tab)
+
+    addActionButton(menu, tab, "Delete this tab", {
+        "Delete " .. tab .. "?",
+        "",
+        "Confirm to remove it,",
+        "or go back to keep it.",
+    }, function()
+        deleteIndikator(instance)
+    end)
+
+    mcmAddSpace(menu, tab)
+
+    addIndikatorTypeSelector(menu, tab, instance)
+
+    mcmAddSpace(menu, tab)
+
+    mcmAddTitle(menu, tab, IndikatorTypes[instance.Type] .. " options")
+
+    local typeKey = IndikatorTypes[instance.Type]
+    local builder = IndikatorOptionBuilders[instance.Type] or buildMarkerOptions
+    builder(menu, tab, instance[typeKey])
+end
+
+-- Builds the "Create Indikators" hub tab (the create button lives here)
+-- followed by every Indikator page. Pages are numbered by position, so the
+-- numbers always run 1..N for the N tabs that currently exist.
+local function buildIndikatorTabs(menu)
+    mcmAddTitle(menu, "Create Indikators", "Create Indikators")
+    mcmAddText(menu, "Create Indikators", "Indikators: " .. #Config.Indikators)
+    mcmAddSpace(menu, "Create Indikators")
+
+    addActionButton(menu, "Create Indikators", "Create a new Indikator", {
+        "Create a new Indikator tab?",
+        "",
+        "Confirm to add it,",
+        "or go back to cancel.",
+    }, createIndikator)
+
+    for index, instance in ipairs(Config.Indikators) do
+        buildIndikatorTab(menu, "Indikator " .. index, instance)
+    end
+end
+
+-- Builds (or fully rebuilds) the entire mod category. Safe to call repeatedly;
+-- it clears the category first so dynamic tabs reflect the current config.
+local function buildModConfigMenu(menu)
     if menu.RemoveCategory ~= nil then
         menu.RemoveCategory(MOD_NAME)
     end
@@ -1484,49 +1716,8 @@ local function setupModConfigMenu()
     })
 
     mcmAddSpace(menu, "General")
-    mcmAddSpace(menu, "General")
-
-    addVisibilitySetting(menu, "General", "Projectile heights", { "HeightText", "Visibility" }, {
-        "Shows the height of projectiles next to them.",
-        "You can use this to conifgure the mod more easily."
-    })
-
-    mcmAddSpace(menu, "General")
 
     addResetDefaultsSetting(menu)
-
-    -- Filters / performance
-    mcmAddTitle(menu, "Filters", "Categories")
-
-    addYesNoSetting(menu, "Filters", "Player tears", { "Targets", "PlayerTears" }, {
-        "Show indicators for player tears.",
-    }, resetRuntimeData)
-
-    addYesNoSetting(menu, "Filters", "Friendly tears", { "Targets", "FriendlyProjectiles" }, {
-        "Show indicators for tears from familiars.",
-    }, resetRuntimeData)
-
-    addYesNoSetting(menu, "Filters", "Enemy projectiles", { "Targets", "EnemyProjectiles" }, {
-        "Show indicators for enemy projectiles.",
-    }, resetRuntimeData)
-
-    mcmAddSpace(menu, "Filters")
-
-    mcmAddTitle(menu, "Filters", "Filters")
-
-    addNumberSetting(menu, "Filters", "Height threshold", { "Filters", "HeightThreshold" }, 0, 96, 1, 0, {
-        "Indicators with \"Only for high arcs\" enabled, are only rendered for projectiles which will reach this height.",
-    }, resetRuntimeData)
-
-    addYesNoSetting(menu, "Filters", "Mark from start to end", { "Filters", "UseRawHeightAsPeakHint" }, {
-        "Marks projectiles that will reach the height threshold while they are still rising toward it,",
-        "and keeps them marked as they fall back below it.",
-    }, resetRuntimeData)
-
-    addNumberSetting(menu, "Filters", "Max active indicators", { "Filters", "MaxActiveIndicators" }, 0, 200, 5, 0, {
-        "Caps the number of indicators rendered at once.",
-        "0 means unlimited.",
-    }, resetRuntimeData)
 
     -- Colors
     mcmAddTitle(menu, "Colors", "Presets")
@@ -1598,206 +1789,11 @@ local function setupModConfigMenu()
         }, 0, 1, 0.05, 2
     )
 
-    -- Markers
-    mcmAddTitle(menu, "Markers", "Circle")
-
-    addVisibilitySetting(menu, "Markers", "Visibility", { "Marker", "Visibility" }, {
-        "Controls when the ground ring is drawn.",
-        "High/low arches use the height threshold to decide.",
-    })
-
-    addNumberSetting(menu, "Markers", "Alpha bottom", { "Marker", "AlphaBottom" }, 0, 1, 0.05, 2, {
-        "Opacity at the bottom.",
-    })
-
-    addNumberSetting(menu, "Markers", "Alpha top", { "Marker", "AlphaTop" }, 0, 1, 0.05, 2, {
-        "Opacity at the top.",
-    })
-
-    addNumberSetting(menu, "Markers", "Scale bottom", { "Marker", "ScaleBottom" }, 0.05, 2, 0.05, 2, {
-        "Scale at the bottom.",
-    })
-
-    addNumberSetting(menu, "Markers", "Scale top", { "Marker", "ScaleTop" }, 0.05, 2, 0.05, 2, {
-        "Scale at the top.",
-    })
-
-    addNumberSetting(menu, "Markers", "Bottom at height", { "Marker", "HeightForBottomValues" }, 0, 300, 2.5, 1, {
-        "Height at which the circle's alpha/scale reaches its bottom values.",
-    })
-
-    addNumberSetting(menu, "Markers", "Top at height", { "Marker", "HeightForTopValues" }, 0, 300, 2.5, 1, {
-        "Height at which the circle's alpha/scale reaches its bottom values",
-    })
-
-    mcmAddSpace(menu, "Markers")
-
-    mcmAddTitle(menu, "Markers", "Center dot")
-
-    addVisibilitySetting(menu, "Markers", "Visibility", { "CenterDot", "Visibility" }, {
-        "Controls when the ground center dot is drawn.",
-        "High/low arches use the height threshold to decide.",
-    })
-
-    addNumberSetting(menu, "Markers", "Alpha bottom", { "CenterDot", "AlphaBottom" }, 0, 1, 0.05, 2, {
-        "Opacity at the bottom.",
-    })
-
-    addNumberSetting(menu, "Markers", "Alpha top", { "CenterDot", "AlphaTop" }, 0, 1, 0.05, 2, {
-        "Opacity at tke top.",
-    })
-
-    addNumberSetting(menu, "Markers", "Scale bottom", { "CenterDot", "ScaleBottom" }, 0.05, 2, 0.05, 2, {
-        "Scale at the bottom.",
-    })
-
-    addNumberSetting(menu, "Markers", "Scale top", { "CenterDot", "ScaleTop" }, 0.05, 2, 0.05, 2, {
-        "Scale at the top.",
-    })
-
-    addNumberSetting(menu, "Markers", "Bottom at height", { "CenterDot", "HeightForBottomValues" }, 0, 300, 2.5, 1, {
-        "Height at which the center dot's alpha/scale reach their bottom values.",
-    })
-
-    addNumberSetting(menu, "Markers", "Top at height", { "CenterDot", "HeightForTopValues" }, 0, 300, 2.5, 1, {
-        "Height at which the center dot's alpha/scale reach their top values.",
-    })
-
-    -- Tether
-    mcmAddTitle(menu, "Tether", "Tether")
-
-    addVisibilitySetting(menu, "Tether", "Visibility", { "Tether", "Visibility" }, {
-        "Controls when the vertical guide from the tear/projectile to the ground is drawn.",
-        "High/low arches use the height threshold to decide.",
-    })
-
-    addNumberSetting(menu, "Tether", "Point spacing", { "Tether", "Step" }, 0.25, 40.00, 0.25, 2, {
-        "Distance between points.",
-    })
-
-    addNumberSetting(menu, "Tether", "Point height", { "Tether", "Height" }, 0.05, 1.50, 0.05, 2, {
-        "Height of each point.",
-    })
-
-    addNumberSetting(menu, "Tether", "Minimum tether length", { "Tether", "MinLength" }, 0, 300, 2.5, 1, {
-        "Only tethers longer than this will be drawn.",
-    })
-
-    addNumberSetting(menu, "Tether", "Maximum tether length", { "Tether", "MaxLength" }, 0, 300, 2.5, 1, {
-        "Only tethers longer than this will be drawn.",
-        "0 means unlimited.",
-    })
-
-    addNumberSetting(menu, "Tether", "Alpha bottom", { "Tether", "AlphaBottom" }, 0, 1, 0.05, 2, {
-        "Opacity at the bottom.",
-    })
-
-    addNumberSetting(menu, "Tether", "Alpha top", { "Tether", "AlphaTop" }, 0, 1, 0.05, 2, {
-        "Opacity at the top.",
-    })
-
-    addNumberSetting(menu, "Tether", "Width bottom", { "Tether", "WidthBottom" }, 0, 5, 0.05, 2, {
-        "Width at the bottom",
-    })
-
-    addNumberSetting(menu, "Tether", "Width top", { "Tether", "WidthTop" }, 0, 5.00, 0.05, 2, {
-        "Width at the top.",
-    })
-
-    addNumberSetting(menu, "Tether", "Bottom at height", { "Tether", "HeightForBottomValues" }, 0, 300, 2.5, 1, {
-        "Height at which the tether's alpha/width reach their bottom values.",
-    })
-
-    addNumberSetting(menu, "Tether", "Top at height", { "Tether", "HeightForTopValues" }, 0, 300, 2.5, 1, {
-        "Height at which the tether's alpha/width reach their top values.",
-    })
-
-    -- Trail
-    mcmAddTitle(menu, "Trail", "Trail")
-
-    addVisibilitySetting(menu, "Trail", "Visibility", { "Trail", "Visibility" }, {
-        "Controls when the short trail behind tears/projectiles is drawn.",
-        "High/low arches use the height threshold to decide.",
-    }, resetRuntimeData)
-
-    addNumberSetting(menu, "Trail", "Length", { "Trail", "Length" }, 0, 20, 1, 0, {
-        "Number of trail points at once.",
-    }, resetRuntimeData)
-
-    addNumberSetting(menu, "Trail", "Minimum distance", { "Trail", "MinDistance" }, 0, 20, 0.25, 2, {
-        "Distance between trail points.",
-    }, resetRuntimeData)
-
-    addNumberSetting(menu, "Trail", "Center offset", { "Trail", "OffsetFromMarkerCenter" }, 0, 64, 1, 0, {
-        "Delay the trail and move it back from the marker center.",
-    })
-
-    addNumberSetting(menu, "Trail", "Alpha bottom", { "Trail", "AlphaBottom" }, 0, 1, 0.05, 2, {
-        "Opacity at the bottom.",
-    })
-
-    addNumberSetting(menu, "Trail", "Alpha top", { "Trail", "AlphaTop" }, 0, 1, 0.05, 2, {
-        "Opacity at the top.",
-    })
-
-    addNumberSetting(menu, "Trail", "Scale bottom", { "Trail", "ScaleBottom" }, 0.05, 2, 0.05, 2, {
-        "Scale at the bottom.",
-    })
-
-    addNumberSetting(menu, "Trail", "Scale top", { "Trail", "ScaleTop" }, 0.05, 2, 0.05, 2, {
-        "Scale at the top.",
-    })
-
-    addNumberSetting(menu, "Trail", "Bottom at height", { "Trail", "HeightForBottomValues" }, 0, 300, 2.5, 1, {
-        "Height at which the trail's alpha/scale reach their bottom values.",
-    })
-
-    addNumberSetting(menu, "Trail", "Top at height", { "Trail", "HeightForTopValues" }, 0, 300, 2.5, 1, {
-        "Height at which the trail's alpha/scale reach their top values.",
-    })
-
     -- Debug
     mcmAddTitle(menu, "Debug", "Debug Text")
 
     addYesNoSetting(menu, "Debug", "Enabled", { "General", "DebugText" }, {
         "Shows small debug counts in the top-left corner.",
-    })
-
-    mcmAddSpace(menu, "Debug")
-
-    mcmAddTitle(menu, "Debug", "Projectile height")
-
-    addVisibilitySetting(menu, "Debug", "Visibility", { "HeightText", "Visibility" }, {
-        "Controls when the height number next to projectiles is shown.",
-        "High/low arches use the height threshold to decide.",
-    })
-
-    addNumberSetting(menu, "Debug", "Minimum height", { "HeightText", "MinHeight" }, 0, 96, 1, 0, {
-        "Height text is hidden below this current air height.",
-    })
-
-    addNumberSetting(menu, "Debug", "Decimals", { "HeightText", "Decimals" }, 0, 2, 1, 0, {
-        "Number of decimal places shown in the height text.",
-    })
-
-    addNumberSetting(menu, "Debug", "Text scale", { "HeightText", "Scale" }, 0.25, 2, 0.05, 2, {
-        "Scale of the height text.",
-    })
-
-    addNumberSetting(menu, "Debug", "Text alpha", { "HeightText", "Alpha" }, 0, 1, 0.05, 2, {
-        "Opacity of the height text.",
-    })
-
-    addNumberSetting(menu, "Debug", "Offset X", { "HeightText", "OffsetX" }, -64, 64, 1, 0, {
-        "Horizontal screen offset from the visible projectile position.",
-    })
-
-    addNumberSetting(menu, "Debug", "Offset Y", { "HeightText", "OffsetY" }, -64, 64, 1, 0, {
-        "Vertical screen offset from the visible projectile position.",
-    })
-
-    addYesNoSetting(menu, "Debug", "Use PositionOffset", { "HeightText", "UsePositionOffset" }, {
-        "Uses the projectile's visual PositionOffset when placing height text.",
     })
 
     mcmAddSpace(menu, "Debug")
@@ -1813,8 +1809,45 @@ local function setupModConfigMenu()
         "If sprite loading fails, draw text glyphs instead.",
     })
 
+    -- Indikator tabs: the "Create Indikators" hub followed by each instance.
+    buildIndikatorTabs(menu)
+end
+
+-- Performs a full rebuild of the live menu. Called after dynamic tabs change.
+local function rebuildModConfigMenu()
+    local menu = getModConfigMenu()
+    if menu == nil or menu.AddSetting == nil or menu.OptionType == nil then
+        return
+    end
+
+    buildModConfigMenu(menu)
+end
+
+local function setupModConfigMenu()
+    if mcmRegistered then
+        return
+    end
+
+    local menu = getModConfigMenu()
+    if menu == nil or menu.AddSetting == nil or menu.OptionType == nil then
+        return
+    end
+
+    buildModConfigMenu(menu)
+
     mcmRegistered = true
     Isaac.DebugString(MOD_NAME .. ": Mod Config Menu registered")
+end
+
+-- Applies any deferred menu rebuild requested by the dynamic-tab buttons.
+-- Runs outside MCM's render pass so we never mutate it mid-frame.
+local function flushPendingMenuRebuild()
+    if not pendingMenuRebuild then
+        return
+    end
+
+    pendingMenuRebuild = false
+    rebuildModConfigMenu()
 end
 
 -- ============================================================================
@@ -1823,6 +1856,7 @@ end
 
 function Indicator:OnPostUpdate()
     setupModConfigMenu()
+    flushPendingMenuRebuild()
 
     if not Config.General.Enabled then
         return
@@ -1833,14 +1867,19 @@ function Indicator:OnPostUpdate()
     for _, entity in ipairs(entities) do
         local kind = classifyEntity(entity)
 
-        if kind ~= nil and passesBaseFilters(entity, kind) then
-            local state = getOrCreateEntityState(entity, kind)
-            recordTrailPoint(entity, state)
+        if kind ~= nil and passesBaseEntityChecks(entity) then
+            local catKey = entityCategoryKey(entity, kind)
+
+            if entityWantedByAnyIndikator(catKey) then
+                getOrCreateEntityState(entity, kind, catKey)
+            end
         end
     end
 
     pruneEntityStates()
-    updateIndicatorSlots()
+
+    -- Per-Indikator qualification, slot allocation, and trail sampling.
+    updateIndikatorRuntime()
 end
 
 function Indicator:OnPostRender()
@@ -1853,7 +1892,6 @@ function Indicator:OnPostRender()
     local tearCount = 0
     local projectileCount = 0
     local shownCount = 0
-    local activeIndicatorCount = 0
 
     local entities = Isaac.GetRoomEntities()
 
@@ -1867,21 +1905,31 @@ function Indicator:OnPostRender()
                 projectileCount = projectileCount + 1
             end
 
-            if passesBaseFilters(entity, kind) then
-                local key = getEntityKey(entity)
-                local state = entityStates[key]
+            if passesBaseEntityChecks(entity) then
+                local catKey = entityCategoryKey(entity, kind)
+                local state = entityStates[getEntityKey(entity)]
+                local rgb = getVisualColor(entity, kind)
+                local groundScreenPos = worldToScreen(entity.Position)
+                local currentHeight = getCurrentAirHeight(entity)
+                local rendered = false
 
-                if state == nil then
-                    state = getOrCreateEntityState(entity, kind)
+                for _, inst in ipairs(Config.Indikators) do
+                    local store = indikatorStore(inst)
+
+                    if store[catKey] then
+                        local slot = state ~= nil and state.Indi[inst] or nil
+
+                        -- The visibility mode + Max-active cap already decided
+                        -- this in updateIndikatorRuntime via the Active slot.
+                        if slot ~= nil and slot.Active then
+                            renderIndikator(inst, store, entity, state, rgb, groundScreenPos, currentHeight)
+                            rendered = true
+                        end
+                    end
                 end
 
-                if state.IndicatorActive then
-                    activeIndicatorCount = activeIndicatorCount + 1
-                end
-
-                if shouldRenderEntity(entity, kind, state) then
+                if rendered then
                     shownCount = shownCount + 1
-                    renderEntityIndicator(entity, kind, state)
                 end
             end
         end
@@ -1891,11 +1939,11 @@ function Indicator:OnPostRender()
         Isaac.RenderText(MOD_NAME .. " " .. VERSION, 8, 28, 0.3, 1, 1, 1)
         Isaac.RenderText(
             string.format(
-                "tears=%d projectiles=%d shown=%d active=%d",
+                "tears=%d projectiles=%d shown=%d indikators=%d",
                 tearCount,
                 projectileCount,
                 shownCount,
-                activeIndicatorCount
+                #Config.Indikators
             ),
             8,
             40,
