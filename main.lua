@@ -1,5 +1,5 @@
 local MOD_NAME = "Tear Indicator"
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 
 local Indicator = RegisterMod(MOD_NAME, 1)
 local game = Game()
@@ -64,6 +64,11 @@ local DefaultConfig = {
         StaleFrames = 20,
     },
 
+    -- Live preview drawn over an Indikator's Mod Config Menu tab.
+    Preview = {
+        Enabled = true,
+    },
+
     -- Runtime-created indicator instances. Each entry is one Indikator tab: a
     -- Type plus its own settings for every type, so switching Type never loses
     -- another type's values. Seeded with one instance on first launch (see
@@ -73,6 +78,69 @@ local DefaultConfig = {
 
 -- The Mode selector choices for an Indikator, in display/order.
 local IndikatorTypes = { "Marker", "Tether", "Trail", "Number" }
+
+-- ============================================================================
+-- Sprite catalog
+--
+-- Each entry is one named sprite an Indikator can use. A sprite is one 32px
+-- cell of the spritesheet, exposed through one anm2 animation. The picker on a
+-- Marker/Tether/Trail tab lists the catalog entries whose Types include that
+-- tab's type, and the renderer draws the chosen entry's Anim.
+--
+--   Name     shown in the picker; unique; also the value stored in the config
+--   Anim     anm2 animation name = one sheet cell (see indicators.anm2)
+--   Types    which Indikator types may select it ("Marker"/"Tether"/"Trail")
+--   Fallback text glyph drawn when sprites are unavailable
+--
+-- To ADD a hand-drawn sprite:
+--   1. Draw a 32x32 cell into resources/gfx/indicator/indicators.png at grid
+--      position (col, row); widen/heighten the sheet as needed.
+--   2. Add an <Animation Name="..."> to indicators.anm2 whose LayerAnimation
+--      frame uses XCrop = col*32, YCrop = row*32, Width/Height = 32.
+--   3. Add an entry below with that Anim name and the Types it suits.
+-- This list, the anm2 animations, and the png cells are kept in sync by hand.
+-- ============================================================================
+-- Order matters: the first entry available to a type is that type's default
+-- (see makeIndikatorData), so each type's original sprite is listed first to
+-- preserve the out-of-box look. "Solid" is shared, so it comes last.
+local SpriteCatalog = {
+    { Name = "Ring",  Anim = "Marker", Types = { "Marker" },                     Fallback = "O" },
+    { Name = "Dot",   Anim = "Trail",  Types = { "Marker", "Trail" },            Fallback = "." },
+    { Name = "Bead",  Anim = "Tether", Types = { "Tether" },                     Fallback = "I" },
+    { Name = "Solid", Anim = "Center", Types = { "Marker", "Trail", "Tether" },  Fallback = "+" },
+}
+
+-- Derived lookups, built once from the catalog above.
+--   SymbolsByType[type] -> ordered list of entries available to that type
+--   SymbolByName[name]  -> entry, for resolving a stored Symbol at render time
+local SymbolsByType = {}
+local SymbolByName = {}
+
+for _, sym in ipairs(SpriteCatalog) do
+    SymbolByName[sym.Name] = sym
+
+    for _, t in ipairs(sym.Types) do
+        SymbolsByType[t] = SymbolsByType[t] or {}
+        table.insert(SymbolsByType[t], sym)
+    end
+end
+
+-- The default symbol name for a type (first one declared for it).
+local function defaultSymbolName(typeName)
+    local list = SymbolsByType[typeName]
+    return list and list[1] and list[1].Name or nil
+end
+
+-- Index of a symbol name within a type's available list (1 if not found).
+local function symbolIndexInList(list, name)
+    for i = 1, #list do
+        if list[i].Name == name then
+            return i
+        end
+    end
+
+    return 1
+end
 
 -- Fresh per-type defaults for one Indikator. Values mirror the old global
 -- Marker/Tether/Trail/HeightText defaults plus the shared category/filter
@@ -84,7 +152,7 @@ local function makeIndikatorData()
         Marker = {
             Visibility = "Only for high arches",
             HeightThreshold = 45,
-            Symbol = 1,
+            Symbol = defaultSymbolName("Marker"),
             AlphaBottom = 0.85,
             AlphaTop = 0.40,
             ScaleBottom = 0.55,
@@ -101,7 +169,7 @@ local function makeIndikatorData()
         Tether = {
             Visibility = "Only for high arches",
             HeightThreshold = 45,
-            Symbol = 1,
+            Symbol = defaultSymbolName("Tether"),
             Step = 5.75,
             Height = 0.40,
             MinLength = 0,
@@ -122,7 +190,7 @@ local function makeIndikatorData()
         Trail = {
             Visibility = "Always",
             HeightThreshold = 45,
-            Symbol = 1,
+            Symbol = defaultSymbolName("Trail"),
             PointCount = 5,
             MinDistance = 10.00,
             OffsetFromMarkerCenter = 0,
@@ -434,12 +502,20 @@ local indicatorSprites = nil
 local spriteLoadAttempted = false
 local spritesAvailable = false
 
-local FallbackGlyphs = {
-    Marker = "O",
-    Center = "+",
-    Trail = ".",
-    Tether = "I",
-}
+-- Derived from the sprite catalog: Anim -> fallback text glyph, plus the set of
+-- unique anims to preload (one per distinct sheet cell in use).
+local FallbackGlyphs = {}
+local SpriteAnims = {}
+do
+    local seen = {}
+    for _, sym in ipairs(SpriteCatalog) do
+        FallbackGlyphs[sym.Anim] = sym.Fallback
+        if not seen[sym.Anim] then
+            seen[sym.Anim] = true
+            table.insert(SpriteAnims, sym.Anim)
+        end
+    end
+end
 
 local function makeIndicatorSprite(animationName)
     local sprite = Sprite()
@@ -463,18 +539,18 @@ local function initIndicatorSprites()
     spriteLoadAttempted = true
 
     local ok, result = pcall(function()
-        indicatorSprites = {
-            Marker = makeIndicatorSprite("Marker"),
-            Center = makeIndicatorSprite("Center"),
-            Trail = makeIndicatorSprite("Trail"),
-            Tether = makeIndicatorSprite("Tether"),
-        }
+        indicatorSprites = {}
 
-        return
-            indicatorSprites.Marker ~= nil and indicatorSprites.Marker:IsLoaded() and
-            indicatorSprites.Center ~= nil and indicatorSprites.Center:IsLoaded() and
-            indicatorSprites.Trail ~= nil and indicatorSprites.Trail:IsLoaded() and
-            indicatorSprites.Tether ~= nil and indicatorSprites.Tether:IsLoaded()
+        for _, anim in ipairs(SpriteAnims) do
+            local sprite = makeIndicatorSprite(anim)
+            indicatorSprites[anim] = sprite
+
+            if sprite == nil or not sprite:IsLoaded() then
+                return false
+            end
+        end
+
+        return true
     end)
 
     if not ok or not result then
@@ -986,13 +1062,31 @@ local function getTrailPointWithCenterOffset(point, centerPos, offset)
     )
 end
 
-local function renderTrailIndikator(entity, store, buf, rgb, currentHeight)
-    if buf == nil then
-        return
+-- Resolves an Indikator's stored Symbol name to the anm2 animation to draw.
+-- Falls back to the type's first available symbol if the stored one is missing
+-- or no longer valid for this type. drawIndicatorSprite maps the anim back to a
+-- text glyph (via FallbackGlyphs) when sprites are unavailable.
+local function resolveSymbolAnim(symbolName, typeName)
+    local sym = SymbolByName[symbolName]
+
+    if sym ~= nil then
+        for _, t in ipairs(sym.Types) do
+            if t == typeName then
+                return sym.Anim
+            end
+        end
     end
 
-    local points = buf.Points
-    local count = #points
+    local list = SymbolsByType[typeName]
+    local first = list and list[1] or nil
+    return first and first.Anim or typeName
+end
+
+-- Screen-space core: draws a trail from an array of screen points (oldest
+-- first). The last point is the live position and is not drawn, matching the
+-- in-game look. Shared by the live renderer and the menu preview.
+local function renderTrailCore(store, rgb, screenPoints, currentHeight)
+    local count = #screenPoints
 
     if count <= 1 then
         return
@@ -1001,18 +1095,16 @@ local function renderTrailIndikator(entity, store, buf, rgb, currentHeight)
     local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
     local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
     local scale = lerp(store.ScaleBottom, store.ScaleTop, t)
-    local offset = store.OffsetFromMarkerCenter or 0
 
     local drawableCount = count - 1
-    local centerPos = entity.Position
+    local anim = resolveSymbolAnim(store.Symbol, "Trail")
 
     for i = 1, drawableCount do
-        local p = getTrailPointWithCenterOffset(points[i], centerPos, offset)
         local f = i / drawableCount
 
         drawIndicatorSprite(
-            "Trail",
-            worldToScreen(p),
+            anim,
+            screenPoints[i],
             scale * f,
             nil,
             rgb,
@@ -1020,6 +1112,27 @@ local function renderTrailIndikator(entity, store, buf, rgb, currentHeight)
             0.90 * f
         )
     end
+end
+
+local function renderTrailIndikator(entity, store, buf, rgb, currentHeight)
+    if buf == nil then
+        return
+    end
+
+    local points = buf.Points
+    if #points <= 1 then
+        return
+    end
+
+    local offset = store.OffsetFromMarkerCenter or 0
+    local centerPos = entity.Position
+
+    local screenPoints = {}
+    for i = 1, #points do
+        screenPoints[i] = worldToScreen(getTrailPointWithCenterOffset(points[i], centerPos, offset))
+    end
+
+    renderTrailCore(store, rgb, screenPoints, currentHeight)
 end
 
 local function getProjectileVisualScreenPos(entity, groundScreenPos, usePositionOffset)
@@ -1058,16 +1171,12 @@ local TETHER_TOP_Y_OFFSET = 6
 local TETHER_BOTTOM_Y_OFFSET = 0
 local TETHER_USE_POSITION_OFFSET = true
 
-local function renderTetherIndikator(entity, store, rgb, groundScreenPos, currentHeight)
+-- Screen-space core: draws the dotted tether between a ground point and the
+-- projectile's on-screen position. Shared by the live renderer and the preview.
+local function renderTetherCore(store, rgb, groundScreenPos, visualScreenPos, currentHeight)
     local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
     local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
     local width = lerp(store.WidthBottom, store.WidthTop, t)
-
-    local visualScreenPos = getProjectileVisualScreenPos(
-        entity,
-        groundScreenPos,
-        TETHER_USE_POSITION_OFFSET
-    )
 
     local topY = visualScreenPos.Y + TETHER_TOP_Y_OFFSET
     local bottomY = groundScreenPos.Y + TETHER_BOTTOM_Y_OFFSET
@@ -1091,10 +1200,11 @@ local function renderTetherIndikator(entity, store, rgb, groundScreenPos, curren
     end
 
     local tetherScaleY = store.Height
+    local anim = resolveSymbolAnim(store.Symbol, "Tether")
 
     while y <= bottomY do
         drawIndicatorSprite(
-            "Tether",
+            anim,
             Vector(x, y),
             width,
             tetherScaleY,
@@ -1107,13 +1217,24 @@ local function renderTetherIndikator(entity, store, rgb, groundScreenPos, curren
     end
 end
 
+local function renderTetherIndikator(entity, store, rgb, groundScreenPos, currentHeight)
+    local visualScreenPos = getProjectileVisualScreenPos(
+        entity,
+        groundScreenPos,
+        TETHER_USE_POSITION_OFFSET
+    )
+
+    renderTetherCore(store, rgb, groundScreenPos, visualScreenPos, currentHeight)
+end
+
 local function renderMarkerIndikator(store, rgb, groundScreenPos, currentHeight)
     local t = getHeightLerpValue(currentHeight, store.HeightForBottomValues, store.HeightForTopValues)
     local alpha = lerp(store.AlphaBottom, store.AlphaTop, t)
     local scale = lerp(store.ScaleBottom, store.ScaleTop, t)
+    local anim = resolveSymbolAnim(store.Symbol, "Marker")
 
     drawIndicatorSprite(
-        "Marker",
+        anim,
         groundScreenPos,
         scale,
         nil,
@@ -1123,12 +1244,28 @@ local function renderMarkerIndikator(store, rgb, groundScreenPos, currentHeight)
     )
 end
 
-local function renderNumberIndikator(entity, store, rgb, groundScreenPos)
-    local height = getCurrentAirHeight(entity)
-
-    if height < (store.MinHeight or 0) then
+-- Screen-space core: draws the height number at a given screen position. Shared
+-- by the live renderer and the preview.
+local function renderNumberCore(store, rgb, screenPos, heightValue)
+    if heightValue < (store.MinHeight or 0) then
         return
     end
+
+    local decimals = clamp(math.floor((store.Decimals or 0) + 0.5), 0, 2)
+    local text = formatNumber(heightValue, decimals)
+    local scale = store.Scale or 0.7
+    local alpha = store.Alpha or 0.9
+
+    local x = screenPos.X + (store.OffsetX or 0)
+    local y = screenPos.Y + (store.OffsetY or 0)
+
+    -- Small shadow for readability.
+    renderText(text, x + 1, y + 1, scale, scale, 0, 0, 0, alpha * 0.75)
+    renderText(text, x, y, scale, scale, rgb[1], rgb[2], rgb[3], alpha)
+end
+
+local function renderNumberIndikator(entity, store, rgb, groundScreenPos)
+    local height = getCurrentAirHeight(entity)
 
     local visualScreenPos = getProjectileVisualScreenPos(
         entity,
@@ -1136,17 +1273,7 @@ local function renderNumberIndikator(entity, store, rgb, groundScreenPos)
         store.UsePositionOffset
     )
 
-    local decimals = clamp(math.floor((store.Decimals or 0) + 0.5), 0, 2)
-    local text = formatNumber(height, decimals)
-    local scale = store.Scale or 0.7
-    local alpha = store.Alpha or 0.9
-
-    local x = visualScreenPos.X + (store.OffsetX or 0)
-    local y = visualScreenPos.Y + (store.OffsetY or 0)
-
-    -- Small shadow for readability.
-    renderText(text, x + 1, y + 1, scale, scale, 0, 0, 0, alpha * 0.75)
-    renderText(text, x, y, scale, scale, rgb[1], rgb[2], rgb[3], alpha)
+    renderNumberCore(store, rgb, visualScreenPos, height)
 end
 
 -- Draws one Indikator for one entity. The decision to draw (visibility mode +
@@ -1357,16 +1484,26 @@ end
 -- ----------------------------------------------------------------------------
 -- Dynamic Indikator tabs
 --
--- Each Indikator instance is one tab. It has a Type (Marker/Tether/Trail/
--- Number) and the options shown depend on that Type. MCM offers no way to
--- remove a single subcategory, so adding/removing tabs and relaying options for
--- a new Type is done by rebuilding the whole mod category from this data model.
--- The rebuild is deferred (via pendingMenuRebuild) to the update phase so we
--- never tear down MCM's structures while it is mid-render.
+-- Each Indikator instance is one tab. Its Type (Marker/Tether/Trail/Number) is
+-- picked on the Create tab at creation time, and the options shown depend on
+-- that Type. MCM offers no way to remove a single subcategory, so adding and
+-- removing tabs is done by rebuilding the whole mod category from this data
+-- model. The rebuild is deferred (via pendingMenuRebuild) to the update phase
+-- so we never tear down MCM's structures while it is mid-render.
 -- ----------------------------------------------------------------------------
 
+-- The Type a freshly created Indikator will use, chosen on the Create tab. It
+-- is a transient UI selection, not part of the saved Config.
+local newIndikatorType = 1
+
+-- Creates a new tab with the Type currently chosen on the Create tab. Appending
+-- (rather than inserting elsewhere) is deliberate: the new tab takes the
+-- subcategory slot the Create tab held, so the rebuild lands the cursor on it
+-- (see buildIndikatorTabs).
 local function createIndikator()
-    table.insert(Config.Indikators, makeIndikatorData())
+    local data = makeIndikatorData()
+    data.Type = newIndikatorType
+    table.insert(Config.Indikators, data)
     saveConfig()
     pendingMenuRebuild = true
 end
@@ -1413,7 +1550,7 @@ end
 -- Per-instance option helpers. `store` is the instance's per-type subtable and
 -- `field` the key within it, so every Indikator edits its own values.
 local function indikatorNumber(menu, tab, store, field, label, minValue, maxValue, step, decimals, info)
-    menu.AddSetting(MOD_NAME, tab, {
+    local settings = {
         Type = menu.OptionType.NUMBER,
         Minimum = minValue,
         Maximum = maxValue,
@@ -1439,7 +1576,22 @@ local function indikatorNumber(menu, tab, store, field, label, minValue, maxValu
         end,
 
         Info = info,
-    })
+    }
+
+    -- Tag bottom/top-paired fields (AlphaBottom, ScaleTop, HeightForTopValues, ...)
+    -- so the settings preview can hold that end while the option is focused. MCM
+    -- preserves unknown fields, so we read this back via MCM.CurrentOption.
+    if field:find("Bottom", 1, true) then
+        settings.PreviewHeight = "bottom"
+    elseif field:find("Top", 1, true) then
+        settings.PreviewHeight = "top"
+    elseif field == "MinLength" then
+        settings.PreviewHeight = "minlen"
+    elseif field == "MaxLength" then
+        settings.PreviewHeight = "maxlen"
+    end
+
+    menu.AddSetting(MOD_NAME, tab, settings)
 end
 
 local function indikatorToggle(menu, tab, store, field, label, info)
@@ -1488,12 +1640,40 @@ local function indikatorVisibility(menu, tab, store, field, label, info)
     })
 end
 
--- Symbol picker placeholder. For now just an index; a real sprite-sheet picker
--- comes later.
-local function indikatorSymbol(menu, tab, store)
-    indikatorNumber(menu, tab, store, "Symbol", "Symbol", 1, 8, 1, 0, {
-        "Which sprite to use (placeholder).",
-        "A proper sprite picker is coming later.",
+-- Symbol picker: cycles the named sprites the catalog makes available to this
+-- Indikator's type. Stores the chosen symbol's Name (a stable key); the renderer
+-- resolves it back to an anm2 animation via resolveSymbolAnim.
+local function indikatorSymbol(menu, tab, store, typeName)
+    local list = SymbolsByType[typeName] or {}
+
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = 1,
+        Maximum = math.max(#list, 1),
+        ModifyBy = 1,
+
+        CurrentSetting = function()
+            return symbolIndexInList(list, store.Symbol)
+        end,
+
+        Display = function()
+            local sym = list[symbolIndexInList(list, store.Symbol)]
+            return "Symbol: " .. (sym and sym.Name or "-")
+        end,
+
+        OnChange = function(value)
+            if #list == 0 then
+                return
+            end
+
+            local index = clamp(math.floor((value or 1) + 0.5), 1, #list)
+            store.Symbol = list[index].Name
+            saveConfig()
+        end,
+
+        Info = {
+            "Which sprite this indicator draws.",
+        },
     })
 end
 
@@ -1531,7 +1711,7 @@ local function buildMarkerOptions(menu, tab, store)
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
-    indikatorSymbol(menu, tab, store)
+    indikatorSymbol(menu, tab, store, "Marker")
     indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "ScaleBottom", "Scale bottom", 0.05, 2, 0.05, 2)
@@ -1548,7 +1728,7 @@ local function buildTetherOptions(menu, tab, store)
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
-    indikatorSymbol(menu, tab, store)
+    indikatorSymbol(menu, tab, store, "Tether")
     indikatorNumber(menu, tab, store, "Step", "Point spacing", 0.25, 40.00, 0.25, 2)
     indikatorNumber(menu, tab, store, "Height", "Point height", 0.05, 1.50, 0.05, 2)
     indikatorNumber(menu, tab, store, "MinLength", "Minimum tether length", 0, 300, 2.5, 1)
@@ -1569,7 +1749,7 @@ local function buildTrailOptions(menu, tab, store)
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
-    indikatorSymbol(menu, tab, store)
+    indikatorSymbol(menu, tab, store, "Trail")
     indikatorNumber(menu, tab, store, "PointCount", "Point count", 1, 30, 1, 0, {
         "How many trail points are kept behind the projectile.",
     })
@@ -1613,39 +1793,88 @@ local IndikatorOptionBuilders = {
     buildNumberOptions,
 }
 
--- The Mode selector. Changing it triggers a rebuild so the option list below is
--- relaid out for the newly selected type.
-local function addIndikatorTypeSelector(menu, tab, instance)
-    menu.AddSetting(MOD_NAME, tab, {
+-- The Type selector shown on the Create tab. It only picks the Type the next
+-- created Indikator will get, so changing it neither saves Config nor rebuilds
+-- the menu (the create button applies it).
+local function addNewIndikatorTypeSelector(menu)
+    menu.AddSetting(MOD_NAME, "Create Indikators", {
         Type = menu.OptionType.NUMBER,
         Minimum = 1,
         Maximum = #IndikatorTypes,
         ModifyBy = 1,
 
         CurrentSetting = function()
-            return instance.Type
+            return newIndikatorType
         end,
 
         Display = function()
-            return "Mode: " .. IndikatorTypes[instance.Type]
+            return "Type: " .. IndikatorTypes[newIndikatorType]
         end,
 
         OnChange = function(value)
-            instance.Type = clamp(math.floor((value or 1) + 0.5), 1, #IndikatorTypes)
-            saveConfig()
-            -- Relayout the options below to match the new type.
-            pendingMenuRebuild = true
+            newIndikatorType = clamp(math.floor((value or 1) + 0.5), 1, #IndikatorTypes)
         end,
 
         Info = {
-            "Choose what this indicator draws.",
-            "The options below change to match.",
+            "Choose the Type for the next Indikator you create.",
         },
     })
 end
 
--- Builds one Indikator tab: a delete button, the Mode selector, then the
--- options for the instance's current type.
+-- Short, per-Type explanations shown under the Type selector on the Create tab.
+-- Each entry is a list of lines; MCM renders one option row per line and does
+-- not wrap, so keep every line short (~40 chars). All entries use the same line
+-- count so the layout below stays put as the selected Type changes.
+local IndikatorTypeDescriptions = {
+    { -- Marker
+        "A ring drawn flat on the ground at the",
+        "spot a tear or projectile will land.",
+        "Best for reading where shots come down.",
+    },
+    { -- Tether
+        "A dotted vertical line linking a shot in",
+        "the air to its spot on the ground.",
+        "Shows how high it currently is.",
+    },
+    { -- Trail
+        "A short fading trail left behind a shot",
+        "as it travels through the air.",
+        "Best for following fast projectiles.",
+    },
+    { -- Number
+        "The shot's current air height drawn as",
+        "a number next to it.",
+        "Best for exact height readouts.",
+    },
+}
+
+-- Longest description, so every Type reserves the same number of text rows.
+local IndikatorDescriptionLines = 0
+for _, desc in ipairs(IndikatorTypeDescriptions) do
+    if #desc > IndikatorDescriptionLines then
+        IndikatorDescriptionLines = #desc
+    end
+end
+
+-- Emits the live description block. Each row re-reads newIndikatorType every
+-- render via its Display function, so the text updates the instant the Type
+-- selector changes (no menu rebuild needed).
+local function addNewIndikatorDescription(menu)
+    for line = 1, IndikatorDescriptionLines do
+        mcmAddText(menu, "Create Indikators", function()
+            local desc = IndikatorTypeDescriptions[newIndikatorType]
+            return desc and desc[line] or ""
+        end)
+    end
+end
+
+-- Maps a tab (subcategory) name to its live instance + type, rebuilt every time
+-- the tabs are. The settings preview uses MCM's current subcategory name to find
+-- the store it should draw.
+local previewTabs = {}
+
+-- Builds one Indikator tab: a delete button, then the options for the
+-- instance's Type (chosen on the Create tab when the tab was made).
 local function buildIndikatorTab(menu, tab, instance)
     mcmAddTitle(menu, tab, tab)
 
@@ -1660,10 +1889,6 @@ local function buildIndikatorTab(menu, tab, instance)
 
     mcmAddSpace(menu, tab)
 
-    addIndikatorTypeSelector(menu, tab, instance)
-
-    mcmAddSpace(menu, tab)
-
     mcmAddTitle(menu, tab, IndikatorTypes[instance.Type] .. " options")
 
     local typeKey = IndikatorTypes[instance.Type]
@@ -1671,12 +1896,38 @@ local function buildIndikatorTab(menu, tab, instance)
     builder(menu, tab, instance[typeKey])
 end
 
--- Builds the "Create Indikators" hub tab (the create button lives here)
--- followed by every Indikator page. Pages are numbered by position, so the
--- numbers always run 1..N for the N tabs that currently exist.
+-- Builds every Indikator page, then the "Create Indikators" hub as the LAST
+-- subcategory. Order matters: a new tab is appended to Config.Indikators, so it
+-- lands in the subcategory slot the "Create Indikators" tab occupied before the
+-- rebuild. Because MCM keeps the cursor on that slot index across a rebuild,
+-- creating a tab jumps straight to the new tab (see createIndikator).
+--
+-- Tabs are named by their Type plus a per-Type running number, e.g. "Marker 1",
+-- "Tether 1", "Marker 2". Per-Type counting keeps every tab name unique (MCM
+-- keys subcategories by name) while staying readable.
 local function buildIndikatorTabs(menu)
+    local typeCounts = {}
+    previewTabs = {}
+
+    for _, instance in ipairs(Config.Indikators) do
+        local typeName = IndikatorTypes[instance.Type]
+        typeCounts[typeName] = (typeCounts[typeName] or 0) + 1
+
+        local tabName = typeName .. " " .. typeCounts[typeName]
+        previewTabs[tabName] = { instance = instance, typeName = typeName }
+        buildIndikatorTab(menu, tabName, instance)
+    end
+
     mcmAddTitle(menu, "Create Indikators", "Create Indikators")
     mcmAddText(menu, "Create Indikators", "Indikators: " .. #Config.Indikators)
+    mcmAddSpace(menu, "Create Indikators")
+
+    addNewIndikatorTypeSelector(menu)
+
+    mcmAddSpace(menu, "Create Indikators")
+
+    addNewIndikatorDescription(menu)
+
     mcmAddSpace(menu, "Create Indikators")
 
     addActionButton(menu, "Create Indikators", "Create a new Indikator", {
@@ -1685,10 +1936,6 @@ local function buildIndikatorTabs(menu)
         "Confirm to add it,",
         "or go back to cancel.",
     }, createIndikator)
-
-    for index, instance in ipairs(Config.Indikators) do
-        buildIndikatorTab(menu, "Indikator " .. index, instance)
-    end
 end
 
 -- Builds (or fully rebuilds) the entire mod category. Safe to call repeatedly;
@@ -1809,6 +2056,14 @@ local function buildModConfigMenu(menu)
         "If sprite loading fails, draw text glyphs instead.",
     })
 
+    mcmAddSpace(menu, "Debug")
+
+    mcmAddTitle(menu, "Debug", "Preview")
+
+    addYesNoSetting(menu, "Debug", "Show settings preview", { "Preview", "Enabled" }, {
+        "Draws a live preview over an indicator's tab while you edit it.",
+    })
+
     -- Indikator tabs: the "Create Indikators" hub followed by each instance.
     buildIndikatorTabs(menu)
 end
@@ -1851,6 +2106,234 @@ local function flushPendingMenuRebuild()
 end
 
 -- ============================================================================
+-- Settings preview (drawn over the Mod Config Menu)
+--
+-- While an Indikator tab is open, draw a small live panel showing how that
+-- indicator looks, using the shared screen-space render cores. It reacts to the
+-- tab's values as you change them, and when a bottom/top option is focused it
+-- holds the preview at that height end (PreviewHeight hint); otherwise it loops
+-- a rising/falling sample so trails build and tethers grow/shrink.
+-- ============================================================================
+
+-- Our own render-frame counter; Game():GetFrameCount can freeze while the menu
+-- is open, so the animation ticks on this instead.
+local previewFrame = 0
+
+local PREVIEW_LOOP = 120
+local PREVIEW_BOX_W = 112
+local PREVIEW_BOX_H = 128
+local PREVIEW_MARGIN = 12
+local PREVIEW_TOP_PAD = 18    -- height-axis ceiling, below the header
+local PREVIEW_BOTTOM_PAD = 26 -- ground line, above the bottom label
+local PANEL_SRC = 16 -- preview_panel.png is a 16x16 solid white cell
+
+-- Lazily loaded solid-fill sprite used to paint the preview's panel, border and
+-- guide lines. Self-contained asset so it never touches the indicator sheet.
+local previewPanelSprite = nil
+local previewPanelTried = false
+
+local function getPreviewPanelSprite()
+    if previewPanelTried then
+        return previewPanelSprite
+    end
+
+    previewPanelTried = true
+
+    local ok = pcall(function()
+        local s = Sprite()
+        s:Load("gfx/indicator/preview_panel.anm2", true)
+        s:SetFrame("Panel", 0)
+        previewPanelSprite = s
+    end)
+
+    if not ok or previewPanelSprite == nil or not previewPanelSprite:IsLoaded() then
+        previewPanelSprite = nil
+    end
+
+    return previewPanelSprite
+end
+
+-- Fills the screen rect (x, y, w, h) with a tinted, alpha-blended solid color.
+-- No-op if the panel sprite failed to load (the preview still draws without it).
+local function drawPanelRect(x, y, w, h, r, g, b, a)
+    local s = getPreviewPanelSprite()
+    if s == nil then
+        return
+    end
+
+    s.Color = Color(r, g, b, a)
+    s.Scale = Vector(w / PANEL_SRC, h / PANEL_SRC)
+    s.Rotation = 0
+    s:Render(Vector(x, y), ZERO_VECTOR, ZERO_VECTOR)
+end
+
+-- Triangle wave in [0,1] over PREVIEW_LOOP frames (0 -> 1 -> 0).
+local function previewTriangle()
+    local phase = (previewFrame % PREVIEW_LOOP) / PREVIEW_LOOP
+    return 1 - math.abs(phase * 2 - 1)
+end
+
+-- Screen points for the Trail preview. Like the live trail it lies flat on the
+-- ground (the trail follows the projectile's ground track, not its height), with
+-- the newest point at the tear's ground X and older points trailing left. Sprite
+-- spacing mirrors MinDistance (the in-game sample threshold), capped so the whole
+-- trail still fits the panel. Oldest first; renderTrailCore drops the last point.
+local function previewTrailPoints(store, tearGroundX, groundY, leftBound)
+    local n = math.max(2, math.floor((store.PointCount or 5) + 0.5))
+
+    local maxSpacing = (tearGroundX - leftBound) / (n - 1)
+    local spacing = math.min(store.MinDistance or 0, maxSpacing)
+
+    local points = {}
+    for i = 1, n do
+        points[i] = Vector(tearGroundX - (n - i) * spacing, groundY)
+    end
+
+    return points
+end
+
+local PREVIEW_WHITE = { 1, 1, 1 }
+
+-- The axis value the tear snaps to when a height-linked option is focused (nil =
+-- animate). Tether lengths resolve onto the same shared axis as air heights.
+local function previewSnapHeight(hint, store)
+    if hint == "bottom" then
+        return store.HeightForBottomValues
+    elseif hint == "top" then
+        return store.HeightForTopValues
+    elseif hint == "minlen" then
+        return store.MinLength
+    elseif hint == "maxlen" then
+        return store.MaxLength
+    end
+
+    return nil
+end
+
+-- A faint labelled reference line across the panel at axis value `v`; the focused
+-- property's line is brightened.
+local function drawHeightMarker(boxX, valueToY, v, text, focused)
+    if v == nil then
+        return
+    end
+
+    local y = valueToY(v)
+    drawPanelRect(boxX + 4, y, PREVIEW_BOX_W - 8, 1, 0.55, 0.60, 0.72, focused and 0.9 or 0.35)
+    renderText(text, boxX + 5, y - 6, 0.4, 0.4, 0.80, 0.85, 0.95, focused and 1 or 0.6)
+end
+
+local function drawSettingsPreview()
+    if not (Config.Preview and Config.Preview.Enabled) then
+        return
+    end
+
+    local menu = getModConfigMenu()
+    if menu == nil or not menu.IsVisible then
+        return
+    end
+
+    if menu.CurrentCategory == nil or menu.CurrentCategory.Name ~= MOD_NAME then
+        return
+    end
+
+    local sub = menu.CurrentSubcategory
+    local tab = sub ~= nil and previewTabs[sub.Name] or nil
+    if tab == nil then
+        return
+    end
+
+    local store = tab.instance[tab.typeName]
+    if store == nil then
+        return
+    end
+
+    previewFrame = previewFrame + 1
+
+    -- Panel pinned to the right edge, vertically centered.
+    local boxX = Isaac.GetScreenWidth() - PREVIEW_BOX_W - PREVIEW_MARGIN
+    local boxY = (Isaac.GetScreenHeight() - PREVIEW_BOX_H) * 0.5
+    local groundY = boxY + PREVIEW_BOX_H - PREVIEW_BOTTOM_PAD
+    local ceilingY = boxY + PREVIEW_TOP_PAD
+    local usableSpan = groundY - ceilingY
+    local tearGroundX = boxX + PREVIEW_BOX_W * 0.6
+    local leftBound = boxX + 10
+
+    -- Shared vertical axis: an air height (or, for the Tether, a length) maps to a
+    -- Y. Everything that gets a marker is folded into axisMax so each line lands
+    -- on-axis, with 10% headroom so the topmost marker clears the ceiling.
+    local topValue = store.HeightForTopValues or 100
+    local axisMax = math.max(
+        topValue,
+        store.HeightThreshold or 0,
+        store.HeightForBottomValues or 0,
+        store.MinLength or 0,
+        store.MaxLength or 0,
+        1
+    ) * 1.1
+
+    local pxPerUnit = usableSpan / axisMax
+    local function valueToY(v)
+        return groundY - clamp(v * pxPerUnit, 0, usableSpan)
+    end
+
+    -- The tear oscillates from the ground (0) up to "Top at height", unless a
+    -- height-linked option is focused, in which case it snaps to that value.
+    local hint = menu.CurrentOption ~= nil and menu.CurrentOption.PreviewHeight or nil
+    local currentHeight = previewSnapHeight(hint, store)
+    if currentHeight == nil then
+        currentHeight = lerp(0, topValue, previewTriangle())
+    end
+    currentHeight = math.max(currentHeight, 0)
+
+    local tearAirPos = Vector(tearGroundX, valueToY(currentHeight))
+    local groundScreenPos = Vector(tearGroundX, groundY)
+
+    -- Background: light border, dark panel, ground line.
+    drawPanelRect(boxX - 2, boxY - 2, PREVIEW_BOX_W + 4, PREVIEW_BOX_H + 4, 0.30, 0.34, 0.42, 0.90)
+    drawPanelRect(boxX, boxY, PREVIEW_BOX_W, PREVIEW_BOX_H, 0.06, 0.07, 0.10, 0.92)
+    drawPanelRect(boxX + 4, groundY, PREVIEW_BOX_W - 8, 2, 0.45, 0.50, 0.60, 0.60)
+
+    -- Reference markers for the height-linked properties this type has.
+    drawHeightMarker(boxX, valueToY, store.HeightForBottomValues, "Bot", hint == "bottom")
+    drawHeightMarker(boxX, valueToY, store.HeightForTopValues, "Top", hint == "top")
+    drawHeightMarker(boxX, valueToY, store.HeightThreshold, "Thr", false)
+    if tab.typeName == "Tether" then
+        drawHeightMarker(boxX, valueToY, store.MinLength, "Min", hint == "minlen")
+        drawHeightMarker(boxX, valueToY, store.MaxLength, "Max", hint == "maxlen")
+    end
+
+    local rgb = getColorPreset().PlayerTear
+
+    -- Faint vertical guide from the ground up to the tear (Tether draws its own).
+    if tab.typeName ~= "Tether" and tearAirPos.Y < groundY - 1 then
+        drawPanelRect(tearGroundX, tearAirPos.Y, 1, groundY - tearAirPos.Y, 0.45, 0.50, 0.60, 0.35)
+    end
+
+    if tab.typeName == "Marker" then
+        renderMarkerIndikator(store, rgb, groundScreenPos, currentHeight)
+    elseif tab.typeName == "Tether" then
+        -- renderTetherCore checks Min/MaxLength in screen pixels; scale them onto
+        -- the preview axis so the cap/hide behaviour lines up with the markers.
+        local tetherStore = setmetatable({
+            MinLength = math.max(0, (store.MinLength or 0) * pxPerUnit - 7),
+            MaxLength = (store.MaxLength or 0) * pxPerUnit,
+        }, { __index = store })
+        renderTetherCore(tetherStore, rgb, groundScreenPos, tearAirPos, currentHeight)
+    elseif tab.typeName == "Trail" then
+        renderTrailCore(store, rgb, previewTrailPoints(store, tearGroundX, groundY, leftBound), currentHeight)
+    elseif tab.typeName == "Number" then
+        renderNumberCore(store, rgb, tearAirPos, currentHeight)
+    end
+
+    -- The tear itself (white, on top) and a readout of its current height.
+    drawIndicatorSprite("Center", tearAirPos, 0.5, 0.5, PREVIEW_WHITE, 0.95, 0.5)
+    renderText("h " .. tostring(math.floor(currentHeight + 0.5)), tearGroundX + 6, tearAirPos.Y - 4, 0.5, 0.5, 1, 1, 1, 0.9)
+
+    -- Header: the tab name.
+    renderText(sub.Name, boxX + 6, boxY + 5, 0.45, 0.45, 1, 1, 1, 0.85)
+end
+
+-- ============================================================================
 -- Callbacks
 -- ============================================================================
 
@@ -1884,6 +2367,10 @@ end
 
 function Indicator:OnPostRender()
     setupModConfigMenu()
+
+    -- Drawn before the Enabled gate so the preview works while configuring even
+    -- with the mod's in-game drawing turned off.
+    drawSettingsPreview()
 
     if not Config.General.Enabled then
         return
@@ -1969,7 +2456,16 @@ function Indicator:OnPreGameExit()
 end
 
 Indicator:AddCallback(ModCallbacks.MC_POST_UPDATE, Indicator.OnPostUpdate)
-Indicator:AddCallback(ModCallbacks.MC_POST_RENDER, Indicator.OnPostRender)
+
+-- Render late so the menu preview (and in-game overlays) draw on top of the Mod
+-- Config Menu, which registers POST_RENDER at default priority. Falls back to a
+-- plain callback if the priority API is unavailable.
+if Indicator.AddPriorityCallback ~= nil and CallbackPriority ~= nil and CallbackPriority.LATE ~= nil then
+    Indicator:AddPriorityCallback(ModCallbacks.MC_POST_RENDER, CallbackPriority.LATE, Indicator.OnPostRender)
+else
+    Indicator:AddCallback(ModCallbacks.MC_POST_RENDER, Indicator.OnPostRender)
+end
+
 Indicator:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, Indicator.OnNewRoom)
 Indicator:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, Indicator.OnGameStarted)
 
