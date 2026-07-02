@@ -1,5 +1,5 @@
 local MOD_NAME = "Tear Indicator"
-local VERSION = "2.1.0"
+local VERSION = "3.0.0"
 
 local Indicator = RegisterMod(MOD_NAME, 1)
 local game = Game()
@@ -79,6 +79,24 @@ local DefaultConfig = {
 -- The Mode selector choices for an Indikator, in display/order.
 local IndikatorTypes = { "Marker", "Tether", "Trail", "Number" }
 
+-- The Class an Indikator targets, chosen at creation alongside Type. Projectiles
+-- go through the full height-arc pipeline; Entities (enemies/familiars/player)
+-- use a simpler, always-visible option set. Index into this list is stored as
+-- inst.Class.
+local IndikatorClasses = { "Projectile", "Entity" }
+
+-- Title tint per Class, so an Indikator tab reads at a glance as blue (Projectile)
+-- or orange (Entity). Indexed by inst.Class; passed to mcmAddTitle.
+local INDIKATOR_CLASS_COLORS = {
+    { 0.35, 0.60, 1.00 }, -- Projectile: blue
+    { 1.00, 0.60, 0.20 }, -- Entity: orange
+}
+
+-- Minimum projectile damage (EntityProjectile.Damage) counted as "a full heart"
+-- for the Projectile-class Full-heart-damage filter. 1.0 is a standard enemy shot
+-- (one red heart on Normal); tune here if needed.
+local FULL_HEART_DAMAGE = 1
+
 -- ============================================================================
 -- Sprite catalog
 --
@@ -143,15 +161,17 @@ local function symbolIndexInList(list, name)
 end
 
 -- Fresh per-type defaults for one Indikator. Values mirror the old global
--- Marker/Tether/Trail/HeightText defaults plus the shared category/filter
--- fields each type now carries.
+-- Marker/Tether/Trail/HeightText defaults plus the shared Targets table (source
+-- toggles + class filters) and cap each type now carries.
 local function makeIndikatorData()
     return {
         Type = 1, -- index into IndikatorTypes
+        Class = 1, -- index into IndikatorClasses (Projectile / Entity)
 
         Marker = {
             Visibility = "Only for high arches",
             HeightThreshold = 45,
+            MarkFromStartToEnd = true,
             Symbol = defaultSymbolName("Marker"),
             AlphaBottom = 0.85,
             AlphaTop = 0.40,
@@ -159,16 +179,25 @@ local function makeIndikatorData()
             ScaleTop = 0.20,
             HeightForBottomValues = 25,
             HeightForTopValues = 200,
-            PlayerTears = true,
-            FriendlyTears = false,
-            EnemyProjectiles = true,
+            -- Which sources this Indikator draws for. Meaning depends on the
+            -- instance's Class: for Projectile, Player/Enemies/Familiars select
+            -- player tears / enemy shots / familiar tears; for Entity they select
+            -- the player / hostile NPCs / familiars. Flying (Entity) and
+            -- FullHeartDamage (Projectile) are class-specific refinement filters.
+            Targets = {
+                Player = true,
+                Enemies = true,
+                Familiars = false,
+                Flying = false,
+                FullHeartDamage = false,
+            },
             MaxActiveIndicators = 80,
-            MarkFromStartToEnd = true,
         },
 
         Tether = {
             Visibility = "Only for high arches",
             HeightThreshold = 45,
+            MarkFromStartToEnd = true,
             Symbol = defaultSymbolName("Tether"),
             Step = 5.75,
             Height = 0.40,
@@ -180,16 +209,25 @@ local function makeIndikatorData()
             WidthTop = 0.30,
             HeightForBottomValues = 40,
             HeightForTopValues = 200,
-            PlayerTears = true,
-            FriendlyTears = false,
-            EnemyProjectiles = true,
+            -- Which sources this Indikator draws for. Meaning depends on the
+            -- instance's Class: for Projectile, Player/Enemies/Familiars select
+            -- player tears / enemy shots / familiar tears; for Entity they select
+            -- the player / hostile NPCs / familiars. Flying (Entity) and
+            -- FullHeartDamage (Projectile) are class-specific refinement filters.
+            Targets = {
+                Player = true,
+                Enemies = true,
+                Familiars = false,
+                Flying = false,
+                FullHeartDamage = false,
+            },
             MaxActiveIndicators = 80,
-            MarkFromStartToEnd = true,
         },
 
         Trail = {
             Visibility = "Always",
             HeightThreshold = 45,
+            MarkFromStartToEnd = true,
             Symbol = defaultSymbolName("Trail"),
             PointCount = 5,
             MinDistance = 10.00,
@@ -200,16 +238,25 @@ local function makeIndikatorData()
             ScaleTop = 0.15,
             HeightForBottomValues = 25,
             HeightForTopValues = 200,
-            PlayerTears = true,
-            FriendlyTears = false,
-            EnemyProjectiles = true,
+            -- Which sources this Indikator draws for. Meaning depends on the
+            -- instance's Class: for Projectile, Player/Enemies/Familiars select
+            -- player tears / enemy shots / familiar tears; for Entity they select
+            -- the player / hostile NPCs / familiars. Flying (Entity) and
+            -- FullHeartDamage (Projectile) are class-specific refinement filters.
+            Targets = {
+                Player = true,
+                Enemies = true,
+                Familiars = false,
+                Flying = false,
+                FullHeartDamage = false,
+            },
             MaxActiveIndicators = 80,
-            MarkFromStartToEnd = true,
         },
 
         Number = {
             Visibility = "Disabled",
             HeightThreshold = 45,
+            MarkFromStartToEnd = true,
             MinHeight = 0,
             Decimals = 0,
             Scale = 0.70,
@@ -217,11 +264,19 @@ local function makeIndikatorData()
             OffsetX = 8,
             OffsetY = -6,
             UsePositionOffset = true,
-            PlayerTears = true,
-            FriendlyTears = false,
-            EnemyProjectiles = true,
+            -- Which sources this Indikator draws for. Meaning depends on the
+            -- instance's Class: for Projectile, Player/Enemies/Familiars select
+            -- player tears / enemy shots / familiar tears; for Entity they select
+            -- the player / hostile NPCs / familiars. Flying (Entity) and
+            -- FullHeartDamage (Projectile) are class-specific refinement filters.
+            Targets = {
+                Player = true,
+                Enemies = true,
+                Familiars = false,
+                Flying = false,
+                FullHeartDamage = false,
+            },
             MaxActiveIndicators = 80,
-            MarkFromStartToEnd = true,
         },
     }
 end
@@ -606,56 +661,91 @@ local function getEntityKey(entity)
     return tostring(entity.InitSeed)
 end
 
-local function classifyEntity(entity)
+-- Familiars fire ENTITY_TEAR (spawner = familiar); we treat those as a
+-- projectile-class source routed to the Familiars target.
+local function isFamiliarTear(entity)
+    return entity.SpawnerType == EntityType.ENTITY_FAMILIAR
+end
+
+-- The projectile-class source ("Player" / "Familiars" / "Enemies") an airborne
+-- tear or projectile belongs to.
+local function projectileSource(entity)
     if entity.Type == EntityType.ENTITY_TEAR then
-        return "tear"
+        if isFamiliarTear(entity) then
+            return "Familiars"
+        end
+
+        return "Player"
     end
 
-    if EntityType.ENTITY_PROJECTILE ~= nil and entity.Type == EntityType.ENTITY_PROJECTILE then
-        return "projectile"
+    -- ENTITY_PROJECTILE
+    if entity.SpawnerType == EntityType.ENTITY_PLAYER then
+        return "Player"
+    end
+
+    if entity.SpawnerType == EntityType.ENTITY_FAMILIAR
+        or entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) then
+        return "Familiars"
+    end
+
+    return "Enemies"
+end
+
+-- Classifies a room entity into the model the Indikators target, or nil to
+-- ignore it (pickups, effects, ...). Returns a descriptor whose fields the match
+-- predicate reads (the same fields are copied onto the tracked entity state).
+-- Class matches the IndikatorClasses strings so it can be compared directly:
+--   Class          "Projectile" | "Entity"
+--   Source         "Player" | "Enemies" | "Familiars"
+--   DamageToPlayer Projectile-class: the shot's damage to the player (0 unless enemy)
+--   IsFlying       Entity-class: whether the entity is flying
+local function classifyEntity(entity)
+    local etype = entity.Type
+
+    if etype == EntityType.ENTITY_TEAR
+        or (EntityType.ENTITY_PROJECTILE ~= nil and etype == EntityType.ENTITY_PROJECTILE) then
+        local source = projectileSource(entity)
+        local damageToPlayer = 0
+
+        if source == "Enemies" and etype == EntityType.ENTITY_PROJECTILE then
+            local projectile = entity:ToProjectile()
+            if projectile ~= nil and projectile.Damage ~= nil then
+                damageToPlayer = projectile.Damage
+            end
+        end
+
+        return {
+            Class = "Projectile",
+            Source = source,
+            DamageToPlayer = damageToPlayer,
+        }
+    end
+
+    if etype == EntityType.ENTITY_PLAYER then
+        return { Class = "Entity", Source = "Player", IsFlying = entity:IsFlying() }
+    end
+
+    if etype == EntityType.ENTITY_FAMILIAR then
+        return { Class = "Entity", Source = "Familiars", IsFlying = entity:IsFlying() }
+    end
+
+    if entity:IsEnemy() then
+        return { Class = "Entity", Source = "Enemies", IsFlying = entity:IsFlying() }
     end
 
     return nil
 end
 
-local function isFriendlyProjectile(entity)
-    if entity.Type == EntityType.ENTITY_TEAR then
-        return true
-    end
-
-    if entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) then
-        return true
-    end
-
-    if entity.SpawnerType == EntityType.ENTITY_PLAYER then
-        return true
-    end
-
-    if entity.SpawnerType == EntityType.ENTITY_FAMILIAR then
-        return true
-    end
-
-    return false
-end
-
--- Familiars fire ENTITY_TEAR, which are classified as "tear" rather than "projectile".
--- They are their tears spawner which allows routing them to the Frinedly category.
-local function isFamiliarTear(entity)
-    return entity.SpawnerType == EntityType.ENTITY_FAMILIAR
-end
-
-local function getVisualColor(entity, kind)
+-- The preset color for a source, shared by both classes: player-blue for the
+-- player / their tears, friendly for familiars, enemy for hostiles.
+local function sourceColor(source)
     local preset = getColorPreset()
 
-    if kind == "tear" then
-        if isFamiliarTear(entity) then
-            return preset.FriendlyProjectile
-        end
-
+    if source == "Player" then
         return preset.PlayerTear
     end
 
-    if isFriendlyProjectile(entity) then
+    if source == "Familiars" then
         return preset.FriendlyProjectile
     end
 
@@ -670,34 +760,47 @@ local function passesBaseEntityChecks(entity)
     return entity.Visible
 end
 
--- The Indikator category an entity belongs to. These strings match the per-type
--- category toggle field names (PlayerTears / FriendlyTears / EnemyProjectiles).
-local function entityCategoryKey(entity, kind)
-    if kind == "tear" then
-        if isFamiliarTear(entity) then
-            return "FriendlyTears"
-        end
-
-        return "PlayerTears"
-    end
-
-    if isFriendlyProjectile(entity) then
-        return "FriendlyTears"
-    end
-
-    return "EnemyProjectiles"
-end
-
 -- The per-type settings subtable an Indikator instance is currently using.
 local function indikatorStore(inst)
     return inst[IndikatorTypes[inst.Type]]
 end
 
--- True if at least one Indikator targets this category, i.e. the entity is
+-- Whether an Indikator draws for a given classified descriptor (a live
+-- classifyEntity result or a tracked entity state, which share the same fields).
+-- Class must match, at least one enabled source must match, and any class filter
+-- (Entity: Flying, Projectile: FullHeartDamage) must pass.
+local function indikatorMatches(inst, descriptor)
+    if IndikatorClasses[inst.Class] ~= descriptor.Class then
+        return false
+    end
+
+    local t = indikatorStore(inst).Targets
+
+    local source = (t.Player and descriptor.Source == "Player")
+        or (t.Enemies and descriptor.Source == "Enemies")
+        or (t.Familiars and descriptor.Source == "Familiars")
+
+    if not source then
+        return false
+    end
+
+    if descriptor.Class == "Entity" and t.Flying and not descriptor.IsFlying then
+        return false
+    end
+
+    if descriptor.Class == "Projectile" and t.FullHeartDamage
+        and (descriptor.DamageToPlayer or 0) < FULL_HEART_DAMAGE then
+        return false
+    end
+
+    return true
+end
+
+-- True if at least one Indikator targets this descriptor, i.e. the entity is
 -- worth tracking at all.
-local function entityWantedByAnyIndikator(catKey)
+local function entityWantedByAnyIndikator(descriptor)
     for _, inst in ipairs(Config.Indikators) do
-        if indikatorStore(inst)[catKey] then
+        if indikatorMatches(inst, descriptor) then
             return true
         end
     end
@@ -755,7 +858,7 @@ resetRuntimeData = function()
     entityStates = {}
 end
 
-local function getOrCreateEntityState(entity, kind, catKey)
+local function getOrCreateEntityState(entity, info)
     local key = getEntityKey(entity)
     local frame = game:GetFrameCount()
 
@@ -764,8 +867,13 @@ local function getOrCreateEntityState(entity, kind, catKey)
     if state == nil then
         state = {
             Key = key,
-            Kind = kind,
-            CategoryKey = catKey,
+
+            -- Classification fields (see classifyEntity); indikatorMatches reads
+            -- these directly off the state.
+            Class = info.Class,
+            Source = info.Source,
+            DamageToPlayer = info.DamageToPlayer,
+            IsFlying = info.IsFlying,
 
             SpawnFrame = frame,
             LastSeenFrame = frame,
@@ -787,8 +895,10 @@ local function getOrCreateEntityState(entity, kind, catKey)
         entityStates[key] = state
     end
 
-    state.Kind = kind
-    state.CategoryKey = catKey
+    state.Class = info.Class
+    state.Source = info.Source
+    state.DamageToPlayer = info.DamageToPlayer
+    state.IsFlying = info.IsFlying
     state.LastSeenFrame = frame
     state.Position = Vector(entity.Position.X, entity.Position.Y)
 
@@ -982,16 +1092,21 @@ local function updateIndikatorRuntime()
 
     for _, inst in ipairs(Config.Indikators) do
         local store = indikatorStore(inst)
-        local threshold = store.HeightThreshold or 0
+
+        -- Entity-class Indikators don't expose the height-arc gating, so they are
+        -- always-on: no threshold and Visibility forced to "Always". The Max-active
+        -- cap still bounds how many render.
+        local isEntity = IndikatorClasses[inst.Class] == "Entity"
+        local threshold = isEntity and 0 or (store.HeightThreshold or 0)
+        local visibility = isEntity and "Always" or store.Visibility
+
         local peakHint = store.MarkFromStartToEnd
         local maxActive = math.floor(store.MaxActiveIndicators or 0)
         local isTrail = inst.Type == 3
-        local trailEnabled = isTrail and store.Visibility ~= "Disabled"
-
-        local visibility = store.Visibility
+        local trailEnabled = isTrail and visibility ~= "Disabled"
 
         for _, state in pairs(entityStates) do
-            if store[state.CategoryKey] then
+            if indikatorMatches(inst, state) then
                 local slot = state.Indi[inst]
                 if slot == nil then
                     slot = { WantsRender = false, Active = false, SlotFrame = nil }
@@ -1492,17 +1607,19 @@ end
 -- so we never tear down MCM's structures while it is mid-render.
 -- ----------------------------------------------------------------------------
 
--- The Type a freshly created Indikator will use, chosen on the Create tab. It
--- is a transient UI selection, not part of the saved Config.
+-- The Type and Class a freshly created Indikator will use, chosen on the Create
+-- tab. Both are transient UI selections, not part of the saved Config.
 local newIndikatorType = 1
+local newIndikatorClass = 1
 
--- Creates a new tab with the Type currently chosen on the Create tab. Appending
--- (rather than inserting elsewhere) is deliberate: the new tab takes the
--- subcategory slot the Create tab held, so the rebuild lands the cursor on it
+-- Creates a new tab with the Type and Class currently chosen on the Create tab.
+-- Appending (rather than inserting elsewhere) is deliberate: the new tab takes
+-- the subcategory slot the Create tab held, so the rebuild lands the cursor on it
 -- (see buildIndikatorTabs).
 local function createIndikator()
     local data = makeIndikatorData()
     data.Type = newIndikatorType
+    data.Class = newIndikatorClass
     table.insert(Config.Indikators, data)
     saveConfig()
     pendingMenuRebuild = true
@@ -1526,7 +1643,7 @@ end
 -- popup; the action only runs when the popup itself is confirmed. Using a popup
 -- instead of a boolean avoids the toggle-on-left/right behaviour that made the
 -- old buttons fire from a stray arrow press.
-local function addActionButton(menu, tabName, label, popupLines, action)
+local function addActionButton(menu, tabName, label, popupLines, action, confirm)
     menu.AddSetting(MOD_NAME, tabName, {
         Type = menu.OptionType.TEXT,
 
@@ -1536,12 +1653,12 @@ local function addActionButton(menu, tabName, label, popupLines, action)
 
         -- MCM treats each table entry as its own line (it only honours $newline
         -- inside a string, not "\n"), so the prompt is built as a line list.
-        Popup = function()
+        Popup = confirm and function()
             return popupLines
-        end,
+        end or nil,
 
-        PopupGfx = menu.PopupGfx and menu.PopupGfx.WIDE_SMALL or nil,
-        PopupWidth = 280,
+        PopupGfx = confirm and (menu.PopupGfx and menu.PopupGfx.WIDE_SMALL or nil) or nil,
+        PopupWidth = confirm and 280 or nil,
 
         OnSelect = action,
     })
@@ -1589,6 +1706,8 @@ local function indikatorNumber(menu, tab, store, field, label, minValue, maxValu
         settings.PreviewHeight = "minlen"
     elseif field == "MaxLength" then
         settings.PreviewHeight = "maxlen"
+    elseif field == "HeightThreshold" then
+        settings.PreviewHeight = "threshold"
     end
 
     menu.AddSetting(MOD_NAME, tab, settings)
@@ -1621,6 +1740,10 @@ local function indikatorVisibility(menu, tab, store, field, label, info)
         Minimum = 1,
         Maximum = #VisibilityOptions,
         ModifyBy = 1,
+
+        -- Visibility keys off the height threshold (high/low arch), so focusing it
+        -- highlights the "Thr" line in the preview and snaps the tear to it.
+        PreviewHeight = "threshold",
 
         CurrentSetting = function()
             return visibilityIndex(store[field])
@@ -1677,100 +1800,175 @@ local function indikatorSymbol(menu, tab, store, typeName)
     })
 end
 
--- The shared category toggles + caps that every type carries.
-local function indikatorCategories(menu, tab, store)
-    mcmAddTitle(menu, tab, "Categories")
+-- A NUMBER option that writes one shown value to two fields at once. Entity tabs
+-- use it to drive a *Bottom/*Top pair from a single control, collapsing the
+-- height-lerp to a constant (entities have no arc to interpolate over).
+local function indikatorPairedNumber(menu, tab, store, fieldA, fieldB, label, minValue, maxValue, step, decimals, info)
+    menu.AddSetting(MOD_NAME, tab, {
+        Type = menu.OptionType.NUMBER,
+        Minimum = minValue,
+        Maximum = maxValue,
+        ModifyBy = step or 1,
 
-    indikatorToggle(menu, tab, store, "PlayerTears", "Player tears", {
-        "Show this indicator for player tears.",
-    })
+        CurrentSetting = function()
+            return store[fieldA]
+        end,
 
-    indikatorToggle(menu, tab, store, "FriendlyTears", "Friendly tears", {
-        "Show this indicator for tears from familiars.",
-    })
+        Display = function()
+            return label .. ": " .. tostring(roundNumber(store[fieldA] or 0, decimals or 0))
+        end,
 
-    indikatorToggle(menu, tab, store, "EnemyProjectiles", "Enemy projectiles", {
-        "Show this indicator for enemy projectiles.",
+        OnChange = function(value)
+            value = clamp(value or minValue, minValue, maxValue)
+            if decimals ~= nil and decimals > 0 then
+                value = roundNumber(value, decimals)
+            else
+                value = math.floor(value + 0.5)
+            end
+            store[fieldA] = value
+            store[fieldB] = value
+            saveConfig()
+        end,
+
+        Info = info,
     })
+end
+
+-- The "Targets" section every Indikator carries: source toggles (Player/Enemies/
+-- Familiars), the class-specific refinement filter (Entity: Flying, Projectile:
+-- Full heart damage), and the render cap. `class` is the instance's fixed class
+-- string ("Projectile"/"Entity"); `color` tints the section title.
+local function indikatorTargets(menu, tab, store, class, color)
+    mcmAddTitle(menu, tab, "Targets", color)
+
+    local targets = store.Targets
+
+    if class == "Entity" then
+        indikatorToggle(menu, tab, targets, "Player", "Player", {
+            "Show this indicator for the player.",
+        })
+        indikatorToggle(menu, tab, targets, "Enemies", "Enemies", {
+            "Show this indicator for hostile enemies.",
+        })
+        indikatorToggle(menu, tab, targets, "Familiars", "Familiars", {
+            "Show this indicator for familiars.",
+        })
+        indikatorToggle(menu, tab, targets, "Flying", "Flying only", {
+            "Restrict the sources above to flying entities only.",
+        })
+    else
+        indikatorToggle(menu, tab, targets, "Player", "Player", {
+            "Show this indicator for the player's tears.",
+        })
+        indikatorToggle(menu, tab, targets, "Enemies", "Enemies", {
+            "Show this indicator for enemy projectiles.",
+        })
+        indikatorToggle(menu, tab, targets, "Familiars", "Familiars", {
+            "Show this indicator for tears from familiars.",
+        })
+        indikatorToggle(menu, tab, targets, "FullHeartDamage", "Full heart damage only", {
+            "Restrict to shots dealing a full heart or more to the player.",
+        })
+    end
 
     indikatorNumber(menu, tab, store, "MaxActiveIndicators", "Max active indicators", 0, 200, 5, 0, {
         "Caps how many of these indicators render at once.",
         "0 means unlimited.",
     })
+end
 
+-- The "mark from start to end" toggle, shown right below each type's height
+-- threshold since it changes how that threshold gates the indicator.
+local function indikatorMarkFromStartToEnd(menu, tab, store)
     indikatorToggle(menu, tab, store, "MarkFromStartToEnd", "Mark from start to end", {
         "Marks projectiles while still rising toward the threshold,",
         "and keeps them marked as they fall back below it.",
     })
 end
 
-local function buildMarkerOptions(menu, tab, store)
+-- ---- Projectile-class option builders (the full height-arc option sets) ----
+
+local function buildProjectileMarkerOptions(menu, tab, store, color)
+    indikatorSymbol(menu, tab, store, "Marker")
+    mcmAddSpace(menu, tab)
     indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
         "Controls when the ground ring is drawn.",
     })
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
-    indikatorSymbol(menu, tab, store, "Marker")
+    indikatorMarkFromStartToEnd(menu, tab, store)
+    mcmAddSpace(menu, tab)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
     indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "ScaleBottom", "Scale bottom", 0.05, 2, 0.05, 2)
     indikatorNumber(menu, tab, store, "ScaleTop", "Scale top", 0.05, 2, 0.05, 2)
-    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
-    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
-    indikatorCategories(menu, tab, store)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Projectile", color)
 end
 
-local function buildTetherOptions(menu, tab, store)
+local function buildProjectileTetherOptions(menu, tab, store, color)
+    indikatorSymbol(menu, tab, store, "Tether")
+    indikatorNumber(menu, tab, store, "Step", "Point spacing", 0.25, 40.00, 0.25, 2)
+    indikatorNumber(menu, tab, store, "Height", "Point height", 0.05, 1.50, 0.05, 2)
+    mcmAddSpace(menu, tab)
     indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
         "Controls when the vertical guide to the ground is drawn.",
     })
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
-    indikatorSymbol(menu, tab, store, "Tether")
-    indikatorNumber(menu, tab, store, "Step", "Point spacing", 0.25, 40.00, 0.25, 2)
-    indikatorNumber(menu, tab, store, "Height", "Point height", 0.05, 1.50, 0.05, 2)
-    indikatorNumber(menu, tab, store, "MinLength", "Minimum tether length", 0, 300, 2.5, 1)
-    indikatorNumber(menu, tab, store, "MaxLength", "Maximum tether length", 0, 300, 2.5, 1)
+    indikatorMarkFromStartToEnd(menu, tab, store)
+    mcmAddSpace(menu, tab)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
     indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "WidthBottom", "Width bottom", 0, 5, 0.05, 2)
     indikatorNumber(menu, tab, store, "WidthTop", "Width top", 0, 5.00, 0.05, 2)
-    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
-    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
-    indikatorCategories(menu, tab, store)
+    indikatorNumber(menu, tab, store, "MinLength", "Minimum tether length", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "MaxLength", "Maximum tether length", 0, 300, 2.5, 1)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Projectile", color)
 end
 
-local function buildTrailOptions(menu, tab, store)
+local function buildProjectileTrailOptions(menu, tab, store, color)
     indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
         "Controls when the short trail behind the projectile is drawn.",
     })
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
+    indikatorMarkFromStartToEnd(menu, tab, store)
+    mcmAddSpace(menu, tab)
     indikatorSymbol(menu, tab, store, "Trail")
     indikatorNumber(menu, tab, store, "PointCount", "Point count", 1, 30, 1, 0, {
         "How many trail points are kept behind the projectile.",
     })
-    indikatorNumber(menu, tab, store, "MinDistance", "Minimum distance", 0, 20, 0.25, 2)
+    indikatorNumber(menu, tab, store, "MinDistance", "Point distance", 0, 20, 0.25, 2)
     indikatorNumber(menu, tab, store, "OffsetFromMarkerCenter", "Center offset", 0, 64, 1, 0)
+    mcmAddSpace(menu, tab)
+    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
+    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
     indikatorNumber(menu, tab, store, "AlphaBottom", "Alpha bottom", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "AlphaTop", "Alpha top", 0, 1, 0.05, 2)
     indikatorNumber(menu, tab, store, "ScaleBottom", "Scale bottom", 0.05, 2, 0.05, 2)
     indikatorNumber(menu, tab, store, "ScaleTop", "Scale top", 0.05, 2, 0.05, 2)
-    indikatorNumber(menu, tab, store, "HeightForBottomValues", "Bottom at height", 0, 300, 2.5, 1)
-    indikatorNumber(menu, tab, store, "HeightForTopValues", "Top at height", 0, 300, 2.5, 1)
-    indikatorCategories(menu, tab, store)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Projectile", color)
 end
 
-local function buildNumberOptions(menu, tab, store)
+local function buildProjectileNumberOptions(menu, tab, store, color)
     indikatorVisibility(menu, tab, store, "Visibility", "Visibility", {
         "Controls when the height number is drawn next to the projectile.",
     })
     indikatorNumber(menu, tab, store, "HeightThreshold", "Height threshold", 0, 96, 1, 0, {
         "Only projectiles reaching this height qualify as high arches.",
     })
+    indikatorMarkFromStartToEnd(menu, tab, store)
+    mcmAddSpace(menu, tab)
     indikatorNumber(menu, tab, store, "MinHeight", "Minimum height", 0, 96, 1, 0, {
         "Height text is hidden below this current air height.",
     })
@@ -1782,22 +1980,83 @@ local function buildNumberOptions(menu, tab, store)
     indikatorToggle(menu, tab, store, "UsePositionOffset", "Use PositionOffset", {
         "Uses the projectile's visual PositionOffset when placing the text.",
     })
-    indikatorCategories(menu, tab, store)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Projectile", color)
 end
 
--- Maps a Type index to the function that emits its options.
-local IndikatorOptionBuilders = {
-    buildMarkerOptions,
-    buildTetherOptions,
-    buildTrailOptions,
-    buildNumberOptions,
+-- ---- Entity-class option builders (simplified: no height-arc gating; single
+-- Alpha/Scale/Width driving the *Bottom/*Top pair to a constant) ----
+
+local function buildEntityMarkerOptions(menu, tab, store, color)
+    indikatorSymbol(menu, tab, store, "Marker")
+    indikatorPairedNumber(menu, tab, store, "AlphaBottom", "AlphaTop", "Alpha", 0, 1, 0.05, 2)
+    indikatorPairedNumber(menu, tab, store, "ScaleBottom", "ScaleTop", "Scale", 0.05, 2, 0.05, 2)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Entity", color)
+end
+
+local function buildEntityTetherOptions(menu, tab, store, color)
+    indikatorSymbol(menu, tab, store, "Tether")
+    indikatorNumber(menu, tab, store, "Step", "Point spacing", 0.25, 40.00, 0.25, 2)
+    indikatorNumber(menu, tab, store, "Height", "Point height", 0.05, 1.50, 0.05, 2)
+    indikatorPairedNumber(menu, tab, store, "AlphaBottom", "AlphaTop", "Alpha", 0, 1, 0.05, 2)
+    indikatorPairedNumber(menu, tab, store, "WidthBottom", "WidthTop", "Width", 0, 5, 0.05, 2)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Entity", color)
+end
+
+local function buildEntityTrailOptions(menu, tab, store, color)
+    indikatorSymbol(menu, tab, store, "Trail")
+    indikatorNumber(menu, tab, store, "PointCount", "Point count", 1, 30, 1, 0, {
+        "How many trail points are kept behind the entity.",
+    })
+    indikatorNumber(menu, tab, store, "MinDistance", "Point distance", 0, 20, 0.25, 2)
+    indikatorNumber(menu, tab, store, "OffsetFromMarkerCenter", "Center offset", 0, 64, 1, 0)
+    indikatorPairedNumber(menu, tab, store, "AlphaBottom", "AlphaTop", "Alpha", 0, 1, 0.05, 2)
+    indikatorPairedNumber(menu, tab, store, "ScaleBottom", "ScaleTop", "Scale", 0.05, 2, 0.05, 2)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Entity", color)
+end
+
+local function buildEntityNumberOptions(menu, tab, store, color)
+    indikatorNumber(menu, tab, store, "Decimals", "Decimals", 0, 2, 1, 0)
+    indikatorNumber(menu, tab, store, "Scale", "Text scale", 0.25, 2, 0.05, 2)
+    indikatorNumber(menu, tab, store, "Alpha", "Text alpha", 0, 1, 0.05, 2)
+    indikatorNumber(menu, tab, store, "OffsetX", "Offset X", -64, 64, 1, 0)
+    indikatorNumber(menu, tab, store, "OffsetY", "Offset Y", -64, 64, 1, 0)
+    mcmAddSpace(menu, tab)
+    indikatorTargets(menu, tab, store, "Entity", color)
+end
+
+-- Maps a Type index to the function that emits its options, per Class.
+local ProjectileOptionBuilders = {
+    buildProjectileMarkerOptions,
+    buildProjectileTetherOptions,
+    buildProjectileTrailOptions,
+    buildProjectileNumberOptions,
 }
+
+local EntityOptionBuilders = {
+    buildEntityMarkerOptions,
+    buildEntityTetherOptions,
+    buildEntityTrailOptions,
+    buildEntityNumberOptions,
+}
+
+-- The option builders for an instance's fixed Class.
+local function indikatorOptionBuildersFor(instance)
+    if IndikatorClasses[instance.Class] == "Entity" then
+        return EntityOptionBuilders
+    end
+
+    return ProjectileOptionBuilders
+end
 
 -- The Type selector shown on the Create tab. It only picks the Type the next
 -- created Indikator will get, so changing it neither saves Config nor rebuilds
 -- the menu (the create button applies it).
 local function addNewIndikatorTypeSelector(menu)
-    menu.AddSetting(MOD_NAME, "Create Indikators", {
+    menu.AddSetting(MOD_NAME, "Add new", {
         Type = menu.OptionType.NUMBER,
         Minimum = 1,
         Maximum = #IndikatorTypes,
@@ -1817,6 +2076,34 @@ local function addNewIndikatorTypeSelector(menu)
 
         Info = {
             "Choose the Type for the next Indikator you create.",
+        },
+    })
+end
+
+-- The Class selector shown right below Type on the Create tab. Like Type, it only
+-- picks what the next created Indikator gets; the create button applies it.
+local function addNewIndikatorClassSelector(menu)
+    menu.AddSetting(MOD_NAME, "Add new", {
+        Type = menu.OptionType.NUMBER,
+        Minimum = 1,
+        Maximum = #IndikatorClasses,
+        ModifyBy = 1,
+
+        CurrentSetting = function()
+            return newIndikatorClass
+        end,
+
+        Display = function()
+            return "Targets: " .. IndikatorClasses[newIndikatorClass]
+        end,
+
+        OnChange = function(value)
+            newIndikatorClass = clamp(math.floor((value or 1) + 0.5), 1, #IndikatorClasses)
+        end,
+
+        Info = {
+            "Projectiles: tears / enemy shots (full height options).",
+            "Entities: enemies / familiars / player (simpler options).",
         },
     })
 end
@@ -1861,7 +2148,7 @@ end
 -- selector changes (no menu rebuild needed).
 local function addNewIndikatorDescription(menu)
     for line = 1, IndikatorDescriptionLines do
-        mcmAddText(menu, "Create Indikators", function()
+        mcmAddText(menu, "Add new", function()
             local desc = IndikatorTypeDescriptions[newIndikatorType]
             return desc and desc[line] or ""
         end)
@@ -1874,31 +2161,37 @@ end
 local previewTabs = {}
 
 -- Builds one Indikator tab: a delete button, then the options for the
--- instance's Type (chosen on the Create tab when the tab was made).
+-- instance's Type and Class (both chosen on the Create tab when the tab was
+-- made). Titles are tinted by Class (blue = Projectile, orange = Entity).
 local function buildIndikatorTab(menu, tab, instance)
-    mcmAddTitle(menu, tab, tab)
+    -- mcmAddTitle(menu, tab, tab)
 
-    addActionButton(menu, tab, "Delete this tab", {
+    addActionButton(menu, tab, "Delete this indicator", {
         "Delete " .. tab .. "?",
         "",
         "Confirm to remove it,",
         "or go back to keep it.",
     }, function()
         deleteIndikator(instance)
-    end)
+    end,
+    true)
 
     mcmAddSpace(menu, tab)
 
-    mcmAddTitle(menu, tab, IndikatorTypes[instance.Type] .. " options")
+    local color = INDIKATOR_CLASS_COLORS[instance.Class]
+    local className = IndikatorClasses[instance.Class] or "Projectile"
+
+    mcmAddTitle(menu, tab, className .. " " .. IndikatorTypes[instance.Type] .. " options", color)
 
     local typeKey = IndikatorTypes[instance.Type]
-    local builder = IndikatorOptionBuilders[instance.Type] or buildMarkerOptions
-    builder(menu, tab, instance[typeKey])
+    local builders = indikatorOptionBuildersFor(instance)
+    local builder = builders[instance.Type] or builders[1]
+    builder(menu, tab, instance[typeKey], color)
 end
 
--- Builds every Indikator page, then the "Create Indikators" hub as the LAST
+-- Builds every Indikator page, then the "Add new" hub as the LAST
 -- subcategory. Order matters: a new tab is appended to Config.Indikators, so it
--- lands in the subcategory slot the "Create Indikators" tab occupied before the
+-- lands in the subcategory slot the "Add new" tab occupied before the
 -- rebuild. Because MCM keeps the cursor on that slot index across a rebuild,
 -- creating a tab jumps straight to the new tab (see createIndikator).
 --
@@ -1918,24 +2211,24 @@ local function buildIndikatorTabs(menu)
         buildIndikatorTab(menu, tabName, instance)
     end
 
-    mcmAddTitle(menu, "Create Indikators", "Create Indikators")
-    mcmAddText(menu, "Create Indikators", "Indikators: " .. #Config.Indikators)
-    mcmAddSpace(menu, "Create Indikators")
+    mcmAddTitle(menu, "Add new", "Create new indikators")
+
+    mcmAddSpace(menu, "Add new")
 
     addNewIndikatorTypeSelector(menu)
+    addNewIndikatorClassSelector(menu)
 
-    mcmAddSpace(menu, "Create Indikators")
-
-    addNewIndikatorDescription(menu)
-
-    mcmAddSpace(menu, "Create Indikators")
-
-    addActionButton(menu, "Create Indikators", "Create a new Indikator", {
+    addActionButton(menu, "Add new", "Create!", {
         "Create a new Indikator tab?",
         "",
         "Confirm to add it,",
         "or go back to cancel.",
-    }, createIndikator)
+    }, createIndikator,
+    false)
+
+    mcmAddSpace(menu, "Add new")
+
+    addNewIndikatorDescription(menu)
 end
 
 -- Builds (or fully rebuilds) the entire mod category. Safe to call repeatedly;
@@ -2119,13 +2412,21 @@ end
 -- is open, so the animation ticks on this instead.
 local previewFrame = 0
 
-local PREVIEW_LOOP = 120
-local PREVIEW_BOX_W = 112
-local PREVIEW_BOX_H = 128
-local PREVIEW_MARGIN = 12
-local PREVIEW_TOP_PAD = 18    -- height-axis ceiling, below the header
-local PREVIEW_BOTTOM_PAD = 26 -- ground line, above the bottom label
+local PREVIEW_LOOP = 200
+local PREVIEW_BOX_W = 60
+local PREVIEW_BOX_H = 110
+local PREVIEW_MARGIN = 20
+local PREVIEW_TOP_PAD = 10    -- height-axis ceiling, below the header
+local PREVIEW_BOTTOM_PAD = 10 -- ground line, above the bottom label
 local PANEL_SRC = 16 -- preview_panel.png is a 16x16 solid white cell
+
+-- Trail preview spacing. Point spacing is MinDistance scaled into preview pixels
+-- (so the gap visibly tracks the Minimum distance setting), with a floor so points
+-- stay distinct at tiny distances. previewTrailPoints then caps how many points
+-- fit in the panel, so raising Point count lengthens the trail instead of
+-- squeezing the existing points together.
+local PREVIEW_TRAIL_SPACING_SCALE = 0.5
+local PREVIEW_TRAIL_MIN_SPACING = 3
 
 -- Lazily loaded solid-fill sprite used to paint the preview's panel, border and
 -- guide lines. Self-contained asset so it never touches the indicator sheet.
@@ -2175,14 +2476,21 @@ end
 
 -- Screen points for the Trail preview. Like the live trail it lies flat on the
 -- ground (the trail follows the projectile's ground track, not its height), with
--- the newest point at the tear's ground X and older points trailing left. Sprite
--- spacing mirrors MinDistance (the in-game sample threshold), capped so the whole
--- trail still fits the panel. Oldest first; renderTrailCore drops the last point.
+-- the newest point at the tear's ground X and older points trailing left.
+--
+-- Spacing is driven by MinDistance (the in-game sample distance) at a fixed
+-- preview scale, with a small floor so points stay distinct when MinDistance is
+-- tiny. The trail is then capped to the points that actually fit between the tear
+-- and the panel's left edge, so raising Point count lengthens the trail until it
+-- fills the panel rather than squeezing the existing points together.
+-- Oldest first; renderTrailCore drops the last point.
 local function previewTrailPoints(store, tearGroundX, groundY, leftBound)
-    local n = math.max(2, math.floor((store.PointCount or 5) + 0.5))
+    local requested = math.max(2, math.floor((store.PointCount or 5) + 0.5))
 
-    local maxSpacing = (tearGroundX - leftBound) / (n - 1)
-    local spacing = math.min(store.MinDistance or 0, maxSpacing)
+    local spacing = math.max((store.MinDistance or 0) * PREVIEW_TRAIL_SPACING_SCALE, PREVIEW_TRAIL_MIN_SPACING)
+
+    local fits = math.floor((tearGroundX - leftBound) / spacing) + 1
+    local n = math.max(2, math.min(requested, fits))
 
     local points = {}
     for i = 1, n do
@@ -2192,7 +2500,7 @@ local function previewTrailPoints(store, tearGroundX, groundY, leftBound)
     return points
 end
 
-local PREVIEW_WHITE = { 1, 1, 1 }
+local PREVIEW_COLOR = { 0.8, 0.8, 0.8 }
 
 -- The axis value the tear snaps to when a height-linked option is focused (nil =
 -- animate). Tether lengths resolve onto the same shared axis as air heights.
@@ -2205,6 +2513,8 @@ local function previewSnapHeight(hint, store)
         return store.MinLength
     elseif hint == "maxlen" then
         return store.MaxLength
+    elseif hint == "threshold" then
+        return store.HeightThreshold
     end
 
     return nil
@@ -2218,8 +2528,8 @@ local function drawHeightMarker(boxX, valueToY, v, text, focused)
     end
 
     local y = valueToY(v)
-    drawPanelRect(boxX + 4, y, PREVIEW_BOX_W - 8, 1, 0.55, 0.60, 0.72, focused and 0.9 or 0.35)
-    renderText(text, boxX + 5, y - 6, 0.4, 0.4, 0.80, 0.85, 0.95, focused and 1 or 0.6)
+    drawPanelRect(boxX + 4, y, PREVIEW_BOX_W - 8, 0.5, 0.55, 0.60, 0.72, focused and 0.9 or 0.35)
+    renderText(text, boxX + 5, y - 6, 0.5, 0.5, 0.80, 0.85, 0.95, focused and 1 or 0.6)
 end
 
 local function drawSettingsPreview()
@@ -2250,12 +2560,12 @@ local function drawSettingsPreview()
     previewFrame = previewFrame + 1
 
     -- Panel pinned to the right edge, vertically centered.
-    local boxX = Isaac.GetScreenWidth() - PREVIEW_BOX_W - PREVIEW_MARGIN
-    local boxY = (Isaac.GetScreenHeight() - PREVIEW_BOX_H) * 0.5
+    local boxX = Isaac.GetScreenWidth() - PREVIEW_BOX_W - 15
+    local boxY = (Isaac.GetScreenHeight() - PREVIEW_BOX_H) * 0.45
     local groundY = boxY + PREVIEW_BOX_H - PREVIEW_BOTTOM_PAD
     local ceilingY = boxY + PREVIEW_TOP_PAD
     local usableSpan = groundY - ceilingY
-    local tearGroundX = boxX + PREVIEW_BOX_W * 0.6
+    local tearGroundX = boxX + PREVIEW_BOX_W * .5
     local leftBound = boxX + 10
 
     -- Shared vertical axis: an air height (or, for the Tether, a length) maps to a
@@ -2289,14 +2599,14 @@ local function drawSettingsPreview()
     local groundScreenPos = Vector(tearGroundX, groundY)
 
     -- Background: light border, dark panel, ground line.
-    drawPanelRect(boxX - 2, boxY - 2, PREVIEW_BOX_W + 4, PREVIEW_BOX_H + 4, 0.30, 0.34, 0.42, 0.90)
-    drawPanelRect(boxX, boxY, PREVIEW_BOX_W, PREVIEW_BOX_H, 0.06, 0.07, 0.10, 0.92)
-    drawPanelRect(boxX + 4, groundY, PREVIEW_BOX_W - 8, 2, 0.45, 0.50, 0.60, 0.60)
+    drawPanelRect(boxX - 2, boxY - 2, PREVIEW_BOX_W + 4, PREVIEW_BOX_H + 4, 0.43, 0.43, 0.43, 0.90)
+    drawPanelRect(boxX, boxY, PREVIEW_BOX_W, PREVIEW_BOX_H, 0.10, 0.10, 0.10, 1.00)
+    drawPanelRect(boxX + 4, groundY, PREVIEW_BOX_W - 8, 1, 0.30, 0.30, 0.30, 1.00)
 
     -- Reference markers for the height-linked properties this type has.
     drawHeightMarker(boxX, valueToY, store.HeightForBottomValues, "Bot", hint == "bottom")
     drawHeightMarker(boxX, valueToY, store.HeightForTopValues, "Top", hint == "top")
-    drawHeightMarker(boxX, valueToY, store.HeightThreshold, "Thr", false)
+    drawHeightMarker(boxX, valueToY, store.HeightThreshold, "Thr", hint == "threshold")
     if tab.typeName == "Tether" then
         drawHeightMarker(boxX, valueToY, store.MinLength, "Min", hint == "minlen")
         drawHeightMarker(boxX, valueToY, store.MaxLength, "Max", hint == "maxlen")
@@ -2306,7 +2616,7 @@ local function drawSettingsPreview()
 
     -- Faint vertical guide from the ground up to the tear (Tether draws its own).
     if tab.typeName ~= "Tether" and tearAirPos.Y < groundY - 1 then
-        drawPanelRect(tearGroundX, tearAirPos.Y, 1, groundY - tearAirPos.Y, 0.45, 0.50, 0.60, 0.35)
+        drawPanelRect(tearGroundX - 0.25, tearAirPos.Y, 0.5, groundY - tearAirPos.Y, 0.45, 0.50, 0.60, 0.35)
     end
 
     if tab.typeName == "Marker" then
@@ -2326,11 +2636,12 @@ local function drawSettingsPreview()
     end
 
     -- The tear itself (white, on top) and a readout of its current height.
-    drawIndicatorSprite("Center", tearAirPos, 0.5, 0.5, PREVIEW_WHITE, 0.95, 0.5)
+    drawIndicatorSprite("Center", tearAirPos, 0.5, 1.0, PREVIEW_COLOR, 0.95, 0.5)
     renderText("h " .. tostring(math.floor(currentHeight + 0.5)), tearGroundX + 6, tearAirPos.Y - 4, 0.5, 0.5, 1, 1, 1, 0.9)
 
     -- Header: the tab name.
-    renderText(sub.Name, boxX + 6, boxY + 5, 0.45, 0.45, 1, 1, 1, 0.85)
+    renderText("Preview", boxX + 19, boxY + 2, 0.5, 0.5, 0.8, 0.8, 0.8, 1.00)
+    -- renderText("Preview", boxX + 15, boxY + 2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.00)
 end
 
 -- ============================================================================
@@ -2348,13 +2659,11 @@ function Indicator:OnPostUpdate()
     local entities = Isaac.GetRoomEntities()
 
     for _, entity in ipairs(entities) do
-        local kind = classifyEntity(entity)
+        local info = classifyEntity(entity)
 
-        if kind ~= nil and passesBaseEntityChecks(entity) then
-            local catKey = entityCategoryKey(entity, kind)
-
-            if entityWantedByAnyIndikator(catKey) then
-                getOrCreateEntityState(entity, kind, catKey)
+        if info ~= nil and passesBaseEntityChecks(entity) then
+            if entityWantedByAnyIndikator(info) then
+                getOrCreateEntityState(entity, info)
             end
         end
     end
@@ -2376,39 +2685,46 @@ function Indicator:OnPostRender()
         return
     end
 
-    local tearCount = 0
     local projectileCount = 0
+    local entityCount = 0
     local shownCount = 0
+    local debug = Config.General.DebugText
 
     local entities = Isaac.GetRoomEntities()
 
     for _, entity in ipairs(entities) do
-        local kind = classifyEntity(entity)
-
-        if kind ~= nil then
-            if kind == "tear" then
-                tearCount = tearCount + 1
-            else
-                projectileCount = projectileCount + 1
+        -- Debug counts include every classifiable entity, tracked or not; the
+        -- classify is skipped entirely when the readout is off.
+        if debug then
+            local info = classifyEntity(entity)
+            if info ~= nil then
+                if info.Class == "Projectile" then
+                    projectileCount = projectileCount + 1
+                else
+                    entityCount = entityCount + 1
+                end
             end
+        end
 
-            if passesBaseEntityChecks(entity) then
-                local catKey = entityCategoryKey(entity, kind)
-                local state = entityStates[getEntityKey(entity)]
-                local rgb = getVisualColor(entity, kind)
+        if passesBaseEntityChecks(entity) then
+            local state = entityStates[getEntityKey(entity)]
+
+            -- Only tracked entities can render; their Source (set at track time)
+            -- drives the color, so no re-classify is needed here.
+            if state ~= nil then
+                local rgb = sourceColor(state.Source)
                 local groundScreenPos = worldToScreen(entity.Position)
                 local currentHeight = getCurrentAirHeight(entity)
                 local rendered = false
 
                 for _, inst in ipairs(Config.Indikators) do
-                    local store = indikatorStore(inst)
-
-                    if store[catKey] then
-                        local slot = state ~= nil and state.Indi[inst] or nil
+                    if indikatorMatches(inst, state) then
+                        local slot = state.Indi[inst]
 
                         -- The visibility mode + Max-active cap already decided
                         -- this in updateIndikatorRuntime via the Active slot.
                         if slot ~= nil and slot.Active then
+                            local store = indikatorStore(inst)
                             renderIndikator(inst, store, entity, state, rgb, groundScreenPos, currentHeight)
                             rendered = true
                         end
@@ -2426,9 +2742,9 @@ function Indicator:OnPostRender()
         Isaac.RenderText(MOD_NAME .. " " .. VERSION, 8, 28, 0.3, 1, 1, 1)
         Isaac.RenderText(
             string.format(
-                "tears=%d projectiles=%d shown=%d indikators=%d",
-                tearCount,
+                "projectiles=%d entities=%d shown=%d indikators=%d",
                 projectileCount,
+                entityCount,
                 shownCount,
                 #Config.Indikators
             ),
